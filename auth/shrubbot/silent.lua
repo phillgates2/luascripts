@@ -19,7 +19,7 @@ local auth = wolfa_requireModule("auth.auth")
 
 -- silEnT shrubbot flags
 -- left by mod: fhjovyDHJOTY
--- left by WA: fhovyDHJTY
+-- left by WA: (none)
 local flags = {
     [auth.PERM_ADMINTEST] = "a",
     [auth.PERM_HELP] = "", -- left blank intentionally
@@ -48,16 +48,20 @@ local flags = {
     [auth.PERM_DISORIENT] = "d",
     [auth.PERM_BURN] = "U",
     [auth.PERM_SLAP] = "A",
-    [auth.PERM_GIB] = "Q", -- g: individual, Q: all players
-    [auth.PERM_THROW] = "L", -- l: individual, L: all players
+    [auth.PERM_GIB] = "g", -- g: individual, Q: all players
+    [auth.PERM_GIBALL] = "Q",
+    [auth.PERM_THROW] = "l", -- l: individual, L: all players
+    [auth.PERM_THROWALL] = "L",
     [auth.PERM_POP] = "z",
     [auth.PERM_NADE] = "x",
+    [auth.PERM_LOL] = "x",
 
     [auth.PERM_WARN] = "R",
     [auth.PERM_MUTE] = "m",
     [auth.PERM_VOICEMUTE] = "m",
     [auth.PERM_KICK] = "k",
     [auth.PERM_BAN] = "b", -- TODO: subnet ban, flag . (dot)
+    [auth.PERM_SUBNETBAN] = ".",
 
     [auth.PERM_SPEC999] = "P",
     [auth.PERM_BALANCE] = "I",

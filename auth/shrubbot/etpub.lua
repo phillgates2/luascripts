@@ -19,7 +19,7 @@ local auth = wolfa_requireModule("auth.auth")
 
 -- ETPub shrubbot flags
 -- left by mod: fjlovyDHJOTY
--- left by WA: flovyDHJTY
+-- left by WA: (none)
 local flags = {
     [auth.PERM_ADMINTEST] = "a",
     [auth.PERM_HELP] = "h",
@@ -43,15 +43,19 @@ local flags = {
     [auth.PERM_ADMINCHAT] = "~",
 
     [auth.PERM_PUT] = "p",
+    [auth.PERM_DROPWEAPONS] = "D",
     [auth.PERM_RENAME] = "N",
     [auth.PERM_FREEZE] = "F",
     [auth.PERM_DISORIENT] = "d",
     [auth.PERM_BURN] = "U",
     [auth.PERM_SLAP] = "A",
-    [auth.PERM_GIB] = "Q", -- g: individual, Q: all players
-    [auth.PERM_THROW] = "L", -- l: individual, L: all players
+    [auth.PERM_GIB] = "g", -- g: individual, Q: all players
+    [auth.PERM_GIBALL] = "Q",
+    [auth.PERM_THROW] = "l", -- l: individual, L: all players
+    [auth.PERM_THROWALL] = "L",
     [auth.PERM_POP] = "z",
     [auth.PERM_NADE] = "x",
+    [auth.PERM_LOL] = "x",
 
     [auth.PERM_WARN] = "R",
     [auth.PERM_MUTE] = "m",

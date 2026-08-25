@@ -73,6 +73,14 @@ function sprees.getRecordTypeByName(name)
     return spreeTypes[name]
 end
 
+function sprees.getCurrent(clientId, type)
+    if playerSprees[clientId] then
+        return playerSprees[clientId][type]
+    end
+
+    return 0
+end
+
 function sprees.get()
     return currentRecords
 end

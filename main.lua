@@ -22,6 +22,7 @@ local bans
 local history
 local mutes
 local rules
+local subnetbans
 
 local auth
 
@@ -113,6 +114,7 @@ function et_InitGame(levelTime, randomSeed, restartMap)
     history = wolfa_requireModule("admin.history")
     mutes = wolfa_requireModule("admin.mutes")
     rules = wolfa_requireModule("admin.rules")
+    subnetbans = wolfa_requireModule("admin.subnetbans")
 
     auth = wolfa_requireModule("auth.auth")
 

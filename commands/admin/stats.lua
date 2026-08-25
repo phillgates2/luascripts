@@ -21,6 +21,8 @@ local commands = wolfa_requireModule("commands.commands")
 
 local util = wolfa_requireModule("util.util")
 
+local settings = wolfa_requireModule("util.settings")
+
 function commandShowStats(clientId, command, victim)
     local cmdClient
 

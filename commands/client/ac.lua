@@ -21,6 +21,8 @@ local commands = wolfa_requireModule("commands.commands")
 
 local players = wolfa_requireModule("players.players")
 
+local settings = wolfa_requireModule("util.settings")
+
 function commandAdminChat(clientId, command, ...)
     if not ... then
         et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^9usage: "..commands.getclient("adminchat")["syntax"].."\";")
@@ -46,3 +48,4 @@ function commandAdminChat(clientId, command, ...)
 end
 commands.addclient("adminchat", commandAdminChat, auth.PERM_ADMINCHAT, "[^2message^7]", true)
 commands.addclient("ac", commandAdminChat, auth.PERM_ADMINCHAT, "[^2message^7]", true)
+commands.addclient("ma", commandAdminChat, auth.PERM_ADMINCHAT, "[^2message^7]", true, (settings.get("fs_game") == "etpub" or settings.get("fs_game") == "silent"))
