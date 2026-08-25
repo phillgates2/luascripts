@@ -20,11 +20,13 @@ local commands = wolfa_requireModule("commands.commands")
 local pagination = wolfa_requireModule("util.pagination")
 local settings = wolfa_requireModule("util.settings")
 
--- the command list is split up in pages of 10 commands, 5 of them per line
+-- the command list is split up in pages of 10 commands, every command is
+-- printed as "command (flag)"
 local COMMANDS_PER_PAGE = 10
 local COMMANDS_PER_LINE = 5
 local MIN_COLUMN_WIDTH = 12
 local MAX_LINE_LENGTH = 72
+local COLUMN_SPACING = 2
 
 -- !help pg 2, !help page 2 and !help p 2 all do the same thing
 local pageKeywords = { ["p"] = true, ["pg"] = true, ["page"] = true }
@@ -54,35 +56,51 @@ local function getAvailableCommands(clientId)
         end
     end
 
-    table.sort(availableCommands)
+    table.sort(availableCommands, function(a, b)
+        return string.lower(a) < string.lower(b)
+    end)
 
     return availableCommands
+end
+
+-- the color codes take up no space on screen, so the entry is padded on its
+-- visible length to keep the next column lined up
+local function formatEntry(command, flag, nameWidth, entryWidth)
+    local entry = "^f"..string.format("%-"..nameWidth.."s", command).." ^9(^2"..flag.."^9)"
+
+    return entry..string.rep(" ", math.max(0, entryWidth - (nameWidth + string.len(flag) + 3)))
 end
 
 local function sendPage(clientId, availableCommands, page)
     local count = #availableCommands
     local limit, offset = pagination.calculate(count, COMMANDS_PER_PAGE, (page - 1) * COMMANDS_PER_PAGE)
+    local cmds = commands.getadmin()
 
-    -- a fixed column width runs the commands into each other as soon as a
-    -- command is longer than it, so size the columns to the longest command
-    local columnWidth = MIN_COLUMN_WIDTH
+    -- a fixed column width runs the entries into each other as soon as a
+    -- command or a flag is longer than it, so size the columns to fit both
+    local nameWidth, flagWidth = MIN_COLUMN_WIDTH, 0
 
     for _, command in ipairs(availableCommands) do
-        columnWidth = math.max(columnWidth, string.len(command) + 2)
+        nameWidth = math.max(nameWidth, string.len(command) + 2)
+        flagWidth = math.max(flagWidth, string.len(cmds[command]["flag"]))
     end
+
+    local entryWidth = nameWidth + flagWidth + 3 + COLUMN_SPACING
 
     et.trap_SendConsoleCommand(et.EXEC_APPEND, "cchat "..clientId.." \"^dhelp: ^9page ^7"..page.."^9/^7"..getPageCount(count).." ^9- ^7"..count.." "..((settings.get("g_standalone") ~= 0) and "available" or "additional").." commands:\";")
 
-    -- never print more commands on a line than fit in the chat area
-    local cmdsPerLine = math.max(1, math.min(COMMANDS_PER_LINE, math.floor(MAX_LINE_LENGTH / columnWidth)))
+    -- never print more entries on a line than fit in the chat area
+    local cmdsPerLine = math.max(1, math.min(COMMANDS_PER_LINE, math.floor(MAX_LINE_LENGTH / entryWidth)))
     local cmdsOnLine, cmdsBuffer = 0, ""
 
     for idx = offset + 1, offset + limit do
-        cmdsBuffer = cmdsBuffer..string.format("%-"..columnWidth.."s", availableCommands[idx])
+        local command = availableCommands[idx]
+
+        cmdsBuffer = cmdsBuffer..formatEntry(command, cmds[command]["flag"], nameWidth, entryWidth)
         cmdsOnLine = cmdsOnLine + 1
 
         if cmdsOnLine == cmdsPerLine then
-            et.trap_SendConsoleCommand(et.EXEC_APPEND, "cchat "..clientId.." \"^f"..cmdsBuffer.."\";")
+            et.trap_SendConsoleCommand(et.EXEC_APPEND, "cchat "..clientId.." \""..cmdsBuffer.."\";")
 
             cmdsBuffer = ""
             cmdsOnLine = 0
@@ -90,7 +108,7 @@ local function sendPage(clientId, availableCommands, page)
     end
 
     if cmdsBuffer ~= "" then
-        et.trap_SendConsoleCommand(et.EXEC_APPEND, "cchat "..clientId.." \"^f"..cmdsBuffer.."\";")
+        et.trap_SendConsoleCommand(et.EXEC_APPEND, "cchat "..clientId.." \""..cmdsBuffer.."\";")
     end
 
     et.trap_SendConsoleCommand(et.EXEC_APPEND, "cchat "..clientId.." \"^9Type ^2!help pg # ^9for another page or ^2!help ^d[command] ^9for a specific command.\";")
