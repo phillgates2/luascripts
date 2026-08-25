@@ -19,7 +19,7 @@ local auth = wolfa_requireModule("auth.auth")
 
 -- NoQuarter shrubbot flags
 -- left by mod: jlqyFHOQY
--- left by WA: lyFHQY
+-- left by WA: (none)
 local flags = {
     [auth.PERM_ADMINTEST] = "a",
     [auth.PERM_HELP] = "h",
@@ -50,16 +50,23 @@ local flags = {
     [auth.PERM_BURN] = "U",
     [auth.PERM_SLAP] = "A",
     [auth.PERM_GIB] = "g",
+    [auth.PERM_GIBALL] = "g",
     [auth.PERM_THROW] = "L",
+    [auth.PERM_THROWALL] = "L",
     [auth.PERM_GLOW] = "o",
     [auth.PERM_PANTS] = "t",
     [auth.PERM_POP] = "z",
+    [auth.PERM_NADE] = "x",
+    [auth.PERM_LOL] = "x", -- no native !lol in noquarter, shares the !nade flag
+    [auth.PERM_POISON] = "U",
 
     [auth.PERM_WARN] = "R",
     [auth.PERM_MUTE] = "m",
     [auth.PERM_VOICEMUTE] = "m",
     [auth.PERM_KICK] = "k",
     [auth.PERM_BAN] = "b",
+    [auth.PERM_BANGUID] = "b", -- noquarter !banguid
+    [auth.PERM_BANIP] = "b", -- noquarter !banip
 
     [auth.PERM_SPEC999] = "P",
     [auth.PERM_BALANCE] = "p",
