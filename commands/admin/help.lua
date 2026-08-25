@@ -111,7 +111,7 @@ local function sendPage(clientId, availableCommands, page)
         et.trap_SendConsoleCommand(et.EXEC_APPEND, "cchat "..clientId.." \""..cmdsBuffer.."\";")
     end
 
-    et.trap_SendConsoleCommand(et.EXEC_APPEND, "cchat "..clientId.." \"^9Type ^2!help pg # ^9for another page or ^2!help ^d[command] ^9for a specific command.\";")
+    et.trap_SendConsoleCommand(et.EXEC_APPEND, "cchat "..clientId.." \"^9Type ^2!help pg # ^9for another page, ^2!help ^d[command] ^9for details.\";")
 
     return true
 end
