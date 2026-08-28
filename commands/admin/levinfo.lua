@@ -41,7 +41,7 @@ function commandLevInfo(clientId, command, levelId)
 
     local levelName
 
-    for _, knownLevel in pairs(level) do
+    for _, knownLevel in pairs(level or {}) do
         if tonumber(knownLevel["id"]) == tonumber(levelId) then
             levelName = knownLevel["name"]
         end

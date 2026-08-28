@@ -55,7 +55,7 @@ function shrubbot.addPlayerPermission(clientId, permission)
         -- et.G_Print(string.format("%s %s %d %s\n", adminName, adminGUID, adminLevel, adminFlags))
 
         if players.getGUID(clientId) == adminGUID then
-            if not auth.isPlayerAllowed(clientId, flags[permission]) then
+            if et.G_shrubbot_permission(clientId, flags[permission]) ~= 1 then
                 adminFlags = adminFlags.."+"..flags[permission]
             end
 

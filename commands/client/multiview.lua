@@ -42,7 +42,7 @@ function commandMultiview(clientId)
         return
     end
 
-    et.trap_SendServerCommand(clientId, "print \"^1Multiview is restricted to authorized admin levels.\\n\"")
+    et.trap_SendServerCommand(clientId, "print \"^1Multiview is restricted to authorized admin levels ^7(^1"..auth.PERM_MULTIVIEW.."^7)\\n\"")
 
     return true
 end

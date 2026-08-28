@@ -21,8 +21,6 @@ local db = wolfa_requireModule("db.db")
 
 local commands = wolfa_requireModule("commands.commands")
 
-local players = wolfa_requireModule("players.players")
-
 local pagination = wolfa_requireModule("util.pagination")
 local util = wolfa_requireModule("util.util")
 
@@ -63,14 +61,14 @@ function commandListAliases(clientId, command, victim, offset)
         return true
     end
     
-    local player = db.getPlayer(players.getGUID(cmdClient))["id"]
+    local player = db.getPlayerId(cmdClient)
     
-    local count = db.getAliasesCount(player)
+    local count = tonumber(db.getAliasesCount(player)) or 0
     local limit, offset = pagination.calculate(count, 30, tonumber(offset))
     local aliases = db.getAliases(player, limit, offset)
     
     et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dAliases for ^7"..et.gentity_get(cmdClient, "pers.netname").."^d:\";")
-    for _, alias in pairs(aliases) do
+    for _, alias in pairs(aliases or {}) do
         local numberOfSpaces = 24 - string.len(util.removeColors(alias["alias"]))
         local spaces = string.rep(" ", numberOfSpaces)
         

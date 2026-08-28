@@ -23,9 +23,9 @@ function commandClientCPM(command, clientId, text, type)
     local clientId = tonumber(clientId)
     local type = tonumber(type) and tonumber(type) or 4
 
-    if clientId and clientId ~= -1337 then -- -1337 because -1 is a magic number/broadcasted to all clients
+    if clientId and clientId ~= -1337 and text then -- -1337 because -1 is a magic number/broadcasted to all clients
         et.trap_SendServerCommand(clientId, "cpm \""..text.."\" "..type..";")
-    elseif clientId then
+    elseif clientId and text then
         et.G_Print(util.removeColors(text).."\n")
     end
 

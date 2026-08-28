@@ -142,8 +142,62 @@ function commands.log(clientId, command, victim, ...)
     logs.writeAdmin(clientId, command, victimId, ...)
 end
 
+-- every permission a registered command is guarded by, mapped to the commands
+-- that need it
+function commands.collectPermissions()
+    local permissions = {}
+
+    local function collect(command, flag)
+        if not flag or flag == "" then
+            return
+        end
+
+        permissions[flag] = permissions[flag] or {}
+
+        table.insert(permissions[flag], command)
+    end
+
+    for command, data in pairs(admincmds) do
+        collect(command, data["flag"])
+    end
+
+    for command, data in pairs(clientcmds) do
+        collect(command, data["flag"])
+    end
+
+    for _, commandsByFlag in pairs(permissions) do
+        table.sort(commandsByFlag)
+    end
+
+    return permissions
+end
+
+-- in standalone mode permissions live in the database and can be missing from
+-- every level, which silently denies the commands that need them. in add-on
+-- mode they are shrubbot flags and WolfAdmin has no say in them.
+function commands.auditPermissions()
+    -- required here instead of at the top of this file: loading them earlier
+    -- changes the order in which the onGameInit handlers are registered
+    local settings = wolfa_requireModule("util.settings")
+    local db = wolfa_requireModule("db.db")
+
+    if settings.get("g_standalone") == 0 or not db.isConnected() then
+        return
+    end
+
+    local loaded, acl = pcall(wolfa_requireModule, "auth.acl")
+
+    if not loaded or not acl.auditPermissions then
+        return
+    end
+
+    acl.auditPermissions(commands.collectPermissions())
+end
+
 function commands.onGameInit()
     commands.load()
+
+    commands.auditPermissions()
 end
 events.handle("onGameInit", commands.onGameInit)
 
@@ -267,7 +321,7 @@ function commands.onClientCommand(clientId, command)
         shrubCmd = string.lower(shrubCmd)
         
         if admincmds[shrubCmd] and admincmds[shrubCmd]["function"] and admincmds[shrubCmd]["flag"] then
-            if wolfCmd == "say" or (((wolfCmd == "say_team" and et.gentity_get(cmdClient, "sess.sessionTeam") ~= et.TEAM_SPECTATORS) or wolfCmd == "say_buddy") and auth.isPlayerAllowed(clientId, auth.PERM_TEAMCMDS)) or (wolfCmd == "!"..shrubCmd and auth.isPlayerAllowed(clientId, auth.PERM_SILENTCMDS)) then
+            if wolfCmd == "say" or (((wolfCmd == "say_team" and et.gentity_get(clientId, "sess.sessionTeam") ~= et.TEAM_SPECTATORS) or wolfCmd == "say_buddy") and auth.isPlayerAllowed(clientId, auth.PERM_TEAMCMDS)) or (wolfCmd == "!"..shrubCmd and auth.isPlayerAllowed(clientId, auth.PERM_SILENTCMDS)) then
                 if admincmds[shrubCmd]["flag"] ~= "" and auth.isPlayerAllowed(clientId, admincmds[shrubCmd]["flag"]) then
                     local isFinished = admincmds[shrubCmd]["function"](clientId, shrubCmd, tables.unpack(args))
                     
@@ -279,7 +333,13 @@ function commands.onClientCommand(clientId, command)
                         return 1
                     end
                 else
-                    et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \""..shrubCmd..": permission denied\";")
+                    local permission = admincmds[shrubCmd]["flag"]
+
+                    -- name the permission, so a denied command can be fixed
+                    -- with !acl addpermission instead of guessing which one
+                    outputDebug("player "..clientId.." was denied '"..shrubCmd.."', which needs permission '"..permission.."'", 3)
+
+                    et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^d"..shrubCmd..": ^9permission denied ^9(^7"..permission.."^9)\";")
                 end
             end
         end

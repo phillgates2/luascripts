@@ -138,7 +138,11 @@ function greetings.load()
 
         local amount, array = files.loadFromCFG(fileName, "[a-z]+")
 
-        for _, greeting in ipairs(array["level"]) do
+        -- the file can be missing or have no [level]/[user] blocks at all,
+        -- which is what admin/rules.lua guards against in the same spot
+        if amount == 0 then return 0 end
+
+        for _, greeting in ipairs(array["level"] or {}) do
             if greeting["text"] then
                 levelGreetings[tonumber(greeting["level"])] = {
                     ["text"] = greeting["greeting"],
@@ -147,7 +151,7 @@ function greetings.load()
             end
         end
 
-        for _, greeting in ipairs(array["user"]) do
+        for _, greeting in ipairs(array["user"] or {}) do
             if greeting["text"] then
                 userGreetings[greeting["guid"]] = {
                     ["text"] = greeting["greeting"],
@@ -165,16 +169,23 @@ end
 function greetings.oninit(levelTime, randomSeed, restartMap)
     if settings.get("g_fileGreetings") ~= "" then
         greetings.load()
-        
-        events.handle("onPlayerReady", greetings.onready)
     end
 end
 events.handle("onGameInit", greetings.oninit)
 
 function greetings.onready(clientId, firstTime)
+    if settings.get("g_fileGreetings") == "" then
+        return
+    end
+
     if firstTime and (not players.isBot(clientId) or settings.get("g_botGreetings") == 1) then
         greetings.show(clientId)
     end
 end
+
+-- registered once, when this module is loaded: registering it from
+-- greetings.oninit ran again on every map change, and events.handle() raises
+-- "event ... is already handled by this function" the second time round
+events.handle("onPlayerReady", greetings.onready)
 
 return greetings

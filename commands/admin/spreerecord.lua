@@ -42,7 +42,9 @@ function commandSpreeRecord(clientId, command)
     else
         for i = 0, sprees.TYPE_NUM - 1 do
             if records[i] and records[i]["record"] > 0 then
-                et.trap_SendConsoleCommand(et.EXEC_APPEND, "cchat -1 \"^dspreerecord: ^9longest "..sprees.getRecordNameByType(i).." spree (^7"..records[i]["record"].."^9) by ^7"..db.getLastAlias(records[i]["player"])["alias"].."^9.\";")
+                local player = db.getLastAlias(records[i]["player"])
+
+                et.trap_SendConsoleCommand(et.EXEC_APPEND, "cchat -1 \"^dspreerecord: ^9longest "..sprees.getRecordNameByType(i).." spree (^7"..records[i]["record"].."^9) by ^7"..(player and player["alias"] or "unknown").."^9.\";")
             end
         end
     end

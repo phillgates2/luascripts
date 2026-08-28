@@ -20,7 +20,9 @@ local commands = wolfa_requireModule("commands.commands")
 local util = wolfa_requireModule("util.util")
 
 function commandBannerPrint(command, clientId, text)
-    et.trap_SendServerCommand(clientId, "bp \""..text.."\";")
+    if text then
+        et.trap_SendServerCommand(clientId, "bp \""..text.."\";")
+    end
     return true
 end
 

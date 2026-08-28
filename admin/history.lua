@@ -17,8 +17,6 @@
 
 local db = wolfa_requireModule("db.db")
 
-local players = wolfa_requireModule("players.players")
-
 local history = {}
 
 function history.get(clientId, historyId)
@@ -26,20 +24,20 @@ function history.get(clientId, historyId)
 end
 
 function history.getCount(clientId)
-    local playerId = db.getPlayer(players.getGUID(clientId))["id"]
+    local playerId = db.getPlayerId(clientId)
 
     return db.getHistoryCount(playerId)
 end
 
 function history.getList(clientId, start, limit)
-    local playerId = db.getPlayer(players.getGUID(clientId))["id"]
+    local playerId = db.getPlayerId(clientId)
 
     return db.getHistory(playerId, start, limit)
 end
 
 function history.add(victimId, invokerId, type, reason)
-    local victimPlayerId = db.getPlayer(players.getGUID(victimId))["id"]
-    local invokerPlayerId = db.getPlayer(players.getGUID(invokerId))["id"]
+    local victimPlayerId = db.getPlayerId(victimId)
+    local invokerPlayerId = db.getPlayerId(invokerId)
 
     db.addHistory(victimPlayerId, invokerPlayerId, type, os.time(), reason)
 end

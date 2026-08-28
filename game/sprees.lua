@@ -96,25 +96,38 @@ function sprees.reset(truncate)
 end
 
 function sprees.load()
-    if db.isConnected() and settings.get("g_spreeRecords") ~= 0 then
-        local map = db.getMap(game.getMap())
+    -- !readconfig concatenates the number of loaded sprees, so this always
+    -- returns a count
+    if not (db.isConnected() and settings.get("g_spreeRecords") ~= 0) then
+        return 0
+    end
 
-        if map then
-            currentMapId = map["id"]
-            db.updateMap(currentMapId, os.time())
-        else
-            db.addMap(game.getMap(), os.time())
-            currentMapId = db.getMap(game.getMap())["id"]
-        end
+    local map = db.getMap(game.getMap())
 
-        local records = db.getRecords(currentMapId)
+    if map then
+        currentMapId = map["id"]
+        db.updateMap(currentMapId, os.time())
+    else
+        db.addMap(game.getMap(), os.time())
 
-        for _, record in ipairs(records) do
-            currentRecords[record["type"]] = {
-                ["player"] = tonumber(record["player_id"]),
-                ["record"] = tonumber(record["record"])
-            }
-        end
+        map = db.getMap(game.getMap())
+        currentMapId = map and map["id"] or nil
+    end
+
+    -- without a map record there is nothing to attach spree records to
+    if not currentMapId then
+        outputDebug("sprees.load: no map record for "..tostring(game.getMap())..", spree records are disabled for this map", 3)
+
+        return 0
+    end
+
+    local records = db.getRecords(currentMapId)
+
+    for _, record in ipairs(records or {}) do
+        currentRecords[record["type"]] = {
+            ["player"] = tonumber(record["player_id"]),
+            ["record"] = tonumber(record["record"])
+        }
     end
 
     for i = 0, sprees.TYPE_NUM - 1 do
@@ -184,6 +197,11 @@ function sprees.load()
 end
 
 function sprees.save()
+    -- nothing to save when the map could not be resolved in sprees.load()
+    if not currentMapId then
+        return
+    end
+
     if db.isConnected() and settings.get("g_spreeRecords") ~= 0 then
         for i = 0, sprees.TYPE_NUM - 1 do
             if currentRecords[i] and currentRecords[i]["record"] > 0 then
@@ -201,7 +219,9 @@ function sprees.printRecords()
     if db.isConnected() and settings.get("g_spreeRecords") ~= 0 then
         for i = 0, sprees.TYPE_NUM - 1 do
             if currentRecords[i] and currentRecords[i]["record"] > 0 then
-                et.trap_SendConsoleCommand(et.EXEC_APPEND, "cchat -1 \"^dsprees: ^9longest "..sprees.getRecordNameByType(i).." spree (^7"..currentRecords[i]["record"].."^9) by ^7"..db.getLastAlias(currentRecords[i]["player"])["alias"].."^9.\";")
+                local player = db.getLastAlias(currentRecords[i]["player"])
+
+                et.trap_SendConsoleCommand(et.EXEC_APPEND, "cchat -1 \"^dsprees: ^9longest "..sprees.getRecordNameByType(i).." spree (^7"..currentRecords[i]["record"].."^9) by ^7"..(player and player["alias"] or "unknown").."^9.\";")
             end
         end
     end
@@ -209,8 +229,6 @@ end
 
 function sprees.onGameInit(levelTime, randomSeed, restartMap)
     sprees.load()
-
-    events.handle("onGameStateChange", sprees.onGameStateChange)
 end
 events.handle("onGameInit", sprees.onGameInit)
 
@@ -233,19 +251,18 @@ function sprees.onClientTeamChange(clientId, old, new)
 end
 
 function sprees.onGameStateChange(gameState)
-    if gameState == constants.GAME_STATE_RUNNING then
-        events.handle("onClientTeamChange", sprees.onClientTeamChange)
-        events.handle("onPlayerDeath", sprees.onPlayerDeath)
-        events.handle("onPlayerRevive", sprees.onPlayerRevive)
-        events.handle("onPlayerSpree", sprees.onPlayerSpree)
-        events.handle("onPlayerSpreeEnd", sprees.onPlayerSpreeEnd)
-    elseif gameState == constants.GAME_STATE_INTERMISSION then
+    if gameState == constants.GAME_STATE_INTERMISSION then
         sprees.save()
         sprees.printRecords()
     end
 end
 
 function sprees.onPlayerSpree(clientId, causeId, type)
+    -- a spree can be reported for a client that has already left
+    if not playerSprees[clientId] then
+        return
+    end
+
     playerSprees[clientId][type] = playerSprees[clientId][type] + 1
 
     local currentSpree = playerSprees[clientId][type]
@@ -305,6 +322,11 @@ function sprees.onPlayerSpree(clientId, causeId, type)
 end
 
 function sprees.onPlayerSpreeEnd(clientId, causeId, type)
+    -- a spree can be reported for a client that has already left
+    if not playerSprees[clientId] then
+        return
+    end
+
     if type == sprees.TYPE_DEATH then
         if sprees.isSpreeEnabled(type) and sprees.isPlayerOnSpree(clientId, sprees.TYPE_DEATH) then
             local msg = string.format("^7%s^d was the first victim of ^7%s ^dafter ^3%d ^d%ss!",
@@ -398,5 +420,19 @@ end
 function sprees.isPlayerOnSpree(clientId, type)
     return spreeMessagesByType[type][1] and playerSprees[clientId][type] >= spreeMessagesByType[type][1]["amount"]
 end
+
+-- handlers are registered once, when this module is loaded. they used to be
+-- registered from sprees.onGameInit/sprees.onGameStateChange, which run on
+-- every map change and every round: the second time round events.handle()
+-- raises "event ... is already handled by this function", which aborts the
+-- whole event and skips every handler registered after sprees (voting and
+-- greetings never initialise after the first map).
+events.handle("onGameStateChange", sprees.onGameStateChange)
+
+events.handle("onClientTeamChange", sprees.onClientTeamChange)
+events.handle("onPlayerDeath", sprees.onPlayerDeath)
+events.handle("onPlayerRevive", sprees.onPlayerRevive)
+events.handle("onPlayerSpree", sprees.onPlayerSpree)
+events.handle("onPlayerSpreeEnd", sprees.onPlayerSpreeEnd)
 
 return sprees

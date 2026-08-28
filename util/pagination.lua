@@ -25,6 +25,9 @@ function pagination.calculate(count, limit, offset)
     limit = limit or 30
     offset = offset or 0
 
+    -- a COUNT query that returns no row hands back nil
+    count = tonumber(count) or 0
+
     if offset < 0 then
         if count < math.abs(offset) then
             limit = count
