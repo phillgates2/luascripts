@@ -101,6 +101,7 @@ auth.PERM_CRAZYSETTINGS = "crazysettings"
 auth.PERM_WARSETTINGS = "warsettings"
 
 auth.PERM_CHEATS = "cheats"
+auth.PERM_PCONEXEC = "pconexec" -- etoz
 auth.PERM_DISGUISE = "disguise" -- legacy
 auth.PERM_AMMOPACK = "ammopack" -- legacy
 auth.PERM_MEDPACK = "medpack" -- legacy

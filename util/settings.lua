@@ -46,6 +46,7 @@ local data = {
     ["g_restrictedVotes"] = "",
     ["g_renameLimit"] = 80,
     ["g_debugWolfAdmin"] = 0,
+    ["g_defaultPermissions"] = 1,
     ["omnibot_maxbots"] = 10,
     ["db_type"] = "sqlite3",
     ["db_file"] = "wolfadmin.db",
@@ -82,6 +83,9 @@ local cfgStructure = {
     ["admin"] = {
         ["history"] = "g_playerHistory",
         ["maxrenames"] = "g_renameLimit"
+    },
+    ["acl"] = {
+        ["defaults"] = "g_defaultPermissions"
     },
     ["balancer"] = {
         ["mindif"] = "g_evenerMinDifference",
