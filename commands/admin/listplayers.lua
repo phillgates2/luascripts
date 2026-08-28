@@ -69,7 +69,11 @@ function commandListPlayers(clientId, command)
 
         local aka = ""
 
-        local mostUsedAlias = db.getMostUsedAlias(db.getPlayerId(player))["alias"]
+        -- a player without an alias record (bots, players whose aliases were
+        -- never stored) has no "most used alias" to show
+        local alias = db.getMostUsedAlias(db.getPlayerId(player))
+        local mostUsedAlias = alias and alias["alias"] or players.getName(player)
+
         if not players.isBot(player) and not auth.isPlayerAllowed(player, auth.PERM_INCOGNITO) and players.getName(player) ~= mostUsedAlias then
             aka = "(a.k.a. "..mostUsedAlias.."^7)"
         end

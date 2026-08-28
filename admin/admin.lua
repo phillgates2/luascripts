@@ -15,6 +15,8 @@
 -- You should have received a copy of the GNU General Public License
 -- along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+local bans = wolfa_requireModule("admin.bans")
+
 local db = wolfa_requireModule("db.db")
 
 local players = wolfa_requireModule("players.players")
@@ -36,7 +38,7 @@ function admin.kickPlayer(victimId, invokerId, reason)
 end
 
 function admin.setPlayerLevel(clientId, level)
-    local playerId = db.getPlayer(players.getGUID(clientId))["id"]
+    local playerId = db.getPlayerId(clientId)
 
     db.updatePlayerLevel(playerId, level)
 end
@@ -55,7 +57,10 @@ function admin.onClientConnectAttempt(clientId, firstTime, isBot)
                 local playerId = player["id"]
                 local ban = db.getBanByPlayer(playerId)
                 if ban then
-                    return "\n\nYou have been banned for "..ban["duration"].." seconds, Reason: "..ban["reason"]
+                    -- a ban without a duration is permanent
+                    local durationText = bans.getDurationText(tonumber(ban["duration"]))
+
+                    return "\n\nYou have been banned "..durationText..", Reason: "..ban["reason"]
                 end
             end
         end
@@ -119,7 +124,7 @@ function admin.onClientNameChange(clientId, oldName, newName)
 
     -- update database
     if db.isConnected() then
-        local playerId = db.getPlayer(players.getGUID(clientId))["id"]
+        local playerId = db.getPlayerId(clientId)
         local alias = db.getAliasByName(playerId, newName)
 
         if alias then

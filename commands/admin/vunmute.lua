@@ -19,6 +19,8 @@ local auth = wolfa_requireModule("auth.auth")
 
 local commands = wolfa_requireModule("commands.commands")
 
+local mutes = wolfa_requireModule("admin.mutes")
+
 local players = wolfa_requireModule("players.players")
 
 function commandVoiceUnmute(clientId, command, victim)

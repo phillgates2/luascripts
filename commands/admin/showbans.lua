@@ -43,7 +43,11 @@ function commandShowBans(clientId, offset)
     else
         et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^d"..count.." bans:\";")
         for _, ban in pairs(bans) do
-            et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^f"..string.format("%4s", ban["id"]).." ^7"..string.format("%-20s", util.removeColors(db.getLastAlias(ban["victim_id"])["alias"])).." ^f"..os.date("%d/%m/%Y", ban["issued"]).." ^7"..string.format("%-20s", util.removeColors(db.getLastAlias(ban["invoker_id"])["alias"])).." ^f"..os.date("%d/%m/%Y", ban["expires"]).." ^7"..ban["reason"].."\";")
+            -- either side of the ban can be missing from the alias table
+            local victim = db.getLastAlias(ban["victim_id"])
+            local invoker = db.getLastAlias(ban["invoker_id"])
+
+            et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^f"..string.format("%4s", ban["id"]).." ^7"..string.format("%-20s", victim and util.removeColors(victim["alias"]) or "unknown").." ^f"..os.date("%d/%m/%Y", ban["issued"]).." ^7"..string.format("%-20s", invoker and util.removeColors(invoker["alias"]) or "unknown").." ^f"..os.date("%d/%m/%Y", ban["expires"]).." ^7"..ban["reason"].."\";")
         end
 
         et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^9Showing results ^7"..(offset + 1).." ^9- ^7"..(offset + limit).." ^9of ^7"..count.."^9.\";")

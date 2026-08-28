@@ -224,7 +224,9 @@ end
 function acl.getPlayerLevel(clientId)
     local player = db.getPlayer(players.getGUID(clientId))
 
-    return player["level_id"]
+    -- no row means no level: treat the player as a guest (level 0) instead of
+    -- throwing, because this runs inside every permission check
+    return player and player["level_id"] or 0
 end
 
 return acl

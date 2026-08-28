@@ -54,7 +54,18 @@ function mysql.updatePlayerLevel(id, level)
 end
 
 function mysql.getPlayerId(clientId)
-    return mysql.getPlayer(players.getGUID(clientId))["id"]
+    local player = mysql.getPlayer(players.getGUID(clientId))
+
+    -- a row is created when a player connects, but that insert can fail or a
+    -- client can have no cl_guid. create it here instead of handing back nil,
+    -- which would break every caller that stores something for this player.
+    if not player then
+        mysql.addPlayer(players.getGUID(clientId), players.getIP(clientId), os.time(), 1)
+
+        player = mysql.getPlayer(players.getGUID(clientId))
+    end
+
+    return player and player["id"] or nil
 end
 
 function mysql.getPlayersCount()
@@ -397,7 +408,24 @@ end
 
 -- bans
 function mysql.addBan(victimId, invokerId, issued, duration, reason)
-    cur = assert(con:execute("INSERT INTO `ban` (`victim_id`, `invoker_id`, `issued`, `expires`, `duration`, `reason`) VALUES ("..tonumber(victimId)..", "..tonumber(invokerId)..", "..tonumber(issued)..", "..(tonumber(issued) + tonumber(duration))..", "..tonumber(duration)..", '"..con:escape(reason).."')"))
+    -- a ban without a duration is permanent. every reader selects
+    -- `expires` > now (and removeExpiredBans deletes everything else), so a
+    -- permanent ban has to be stored with an expiry in the future rather than
+    -- with `issued` + 0, which would already have expired.
+    local expires = mysql.getBanExpiry(tonumber(issued), tonumber(duration))
+
+    cur = assert(con:execute("INSERT INTO `ban` (`victim_id`, `invoker_id`, `issued`, `expires`, `duration`, `reason`) VALUES ("..tonumber(victimId)..", "..tonumber(invokerId)..", "..tonumber(issued)..", "..expires..", "..(tonumber(duration) or 0)..", '"..con:escape(reason).."')"))
+end
+
+-- the timestamp a ban with the given duration expires at. 2147483647 is the
+-- largest value that fits both an INTEGER column in SQLite and an INT column in
+-- MySQL (2038-01-19), so it is used for bans without a duration.
+function mysql.getBanExpiry(issued, duration)
+    if not duration or duration <= 0 then
+        return 2147483647
+    end
+
+    return tonumber(issued) + duration
 end
 
 function mysql.removeBan(banId)

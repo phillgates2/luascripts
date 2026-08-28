@@ -22,9 +22,9 @@ local util = wolfa_requireModule("util.util")
 function commandClientConsolePrint(command, clientId, text)
     local clientId = tonumber(clientId)
 
-    if clientId and clientId ~= -1337 then -- -1337 because -1 is a magic number/broadcasted to all clients
+    if clientId and clientId ~= -1337 and text then -- -1337 because -1 is a magic number/broadcasted to all clients
         et.trap_SendServerCommand(clientId, "print \""..text.."\n\";")
-    elseif clientId then
+    elseif clientId and text then
         et.G_Print(util.removeColors(text).."\n")
     end
 

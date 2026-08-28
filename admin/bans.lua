@@ -17,8 +17,6 @@
 
 local db = wolfa_requireModule("db.db")
 
-local players = wolfa_requireModule("players.players")
-
 local events = wolfa_requireModule("util.events")
 local timers = wolfa_requireModule("util.timers")
 
@@ -39,14 +37,26 @@ function bans.getList(start, limit)
 end
 
 function bans.add(victimId, invokerId, duration, reason)
-    local victimPlayerId = db.getPlayer(players.getGUID(victimId))["id"]
-    local invokerPlayerId = db.getPlayer(players.getGUID(invokerId))["id"]
+    local victimPlayerId = db.getPlayerId(victimId)
+    local invokerPlayerId = db.getPlayerId(invokerId)
 
     local reason = reason and reason or "banned by admin"
 
     db.addBan(victimPlayerId, invokerPlayerId, os.time(), duration, reason)
 
-    et.trap_DropClient(victimId, "You have been banned for "..duration.." seconds, Reason: "..reason, 0)
+    -- duration is nil (or 0) for a permanent ban
+    local durationText = bans.getDurationText(duration)
+
+    et.trap_DropClient(victimId, "You have been banned "..durationText..", Reason: "..reason, 0)
+end
+
+-- "for 600 seconds" for a timed ban, "permanently" when there is no duration
+function bans.getDurationText(duration)
+    if duration and duration > 0 then
+        return "for "..duration.." seconds"
+    end
+
+    return "permanently"
 end
 
 function bans.remove(banId)

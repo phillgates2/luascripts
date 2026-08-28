@@ -21,8 +21,6 @@ local db = wolfa_requireModule("db.db")
 
 local commands = wolfa_requireModule("commands.commands")
 
-local players = wolfa_requireModule("players.players")
-
 local pagination = wolfa_requireModule("util.pagination")
 local util = wolfa_requireModule("util.util")
 
@@ -63,7 +61,7 @@ function commandListAliases(clientId, command, victim, offset)
         return true
     end
     
-    local player = db.getPlayer(players.getGUID(cmdClient))["id"]
+    local player = db.getPlayerId(cmdClient)
     
     local count = db.getAliasesCount(player)
     local limit, offset = pagination.calculate(count, 30, tonumber(offset))
