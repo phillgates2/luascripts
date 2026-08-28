@@ -139,6 +139,56 @@ function acl.isLevelAllowed(levelId, permission)
     return cachedLevels[levelId] ~= nil and tables.contains(cachedLevels[levelId], permission)
 end
 
+function acl.isPermissionGranted(permission)
+    for _, levelPermissions in pairs(cachedLevels) do
+        if tables.contains(levelPermissions, permission) then
+            return true
+        end
+    end
+
+    return false
+end
+
+function acl.getUngrantedPermissions(permissions)
+    local ungranted = {}
+
+    for _, permission in ipairs(permissions) do
+        if not acl.isPermissionGranted(permission) then
+            table.insert(ungranted, permission)
+        end
+    end
+
+    table.sort(ungranted)
+
+    return ungranted
+end
+
+-- a permission that no level has can never be satisfied: every command guarded
+-- by it answers "permission denied" for every player on the server, no matter
+-- how high their level is. commandsByPermission maps a permission to the list
+-- of commands that need it (see commands.collectPermissions()).
+function acl.auditPermissions(commandsByPermission)
+    local permissions = {}
+
+    for permission in pairs(commandsByPermission) do
+        table.insert(permissions, permission)
+    end
+
+    local ungranted = acl.getUngrantedPermissions(permissions)
+
+    if #ungranted == 0 then
+        return
+    end
+
+    outputDebug(#ungranted.." permission(s) are not granted to any level, so the commands below are denied for every player:", 3)
+
+    for _, permission in ipairs(ungranted) do
+        outputDebug("  '"..permission.."' is needed by: "..table.concat(commandsByPermission[permission], ", "), 3)
+    end
+
+    outputDebug("Grant a permission with '!acl addpermission [level] [permission]'.", 3)
+end
+
 function acl.getPlayerPermissions(clientId)
     return cachedClients[clientId]
 end
