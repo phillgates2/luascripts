@@ -117,6 +117,7 @@ auth.PERM_PERMA = "perma"
 
 auth.PERM_TEAMCMDS = "teamcmds"
 auth.PERM_SILENTCMDS = "silentcmds"
+auth.PERM_MULTIVIEW = "multiview"
 
 auth.PERM_SPY = "spy"
 auth.PERM_IMMUNE = "immune"
