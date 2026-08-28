@@ -36,21 +36,18 @@ local cachedClients = {}
 -- also applied automatically on startup (see acl.applyDefaultPermissions)
 -- so commands such as !give, !lol and !firegod work out of the box.
 --
+-- Everything is granted to level 5 (Server Owner) ONLY: levels 3 and 4 keep
+-- exactly the permissions the stock schema gives them, so no lower admin
+-- gains commands or privileges from this.
+--
 -- Set g_defaultPermissions to 0 in wolfadmin.toml ([acl] defaults = 0) or as
 -- a server cvar to manage permissions strictly by hand.
 local defaultPermissions = {
-    -- level 3 (Admin): banning and locking, on top of the stock schema
-    [3] = {
+    -- level 5 (Server Owner): everything the fork adds, all in one place
+    [5] = {
         "banguid",
         "banip",
         "lockplayer", -- the stock schema grants the plural 'lockplayers', which nothing checks
-        "resetxp_self",
-    },
-    -- level 4 (Senior Admin): the fun and server-wide commands
-    [4] = {
-        "banguid",
-        "banip",
-        "lockplayer",
         "resetxp_self",
         "resetxp",
         "subnetban",
@@ -66,27 +63,6 @@ local defaultPermissions = {
         "crazysettings",
         "warsettings",
         "multiview", -- ET: Legacy only, and only while g_multiview is enabled
-    },
-    -- level 5 (Server Owner): everything above, plus the cheat commands
-    [5] = {
-        "banguid",
-        "banip",
-        "lockplayer",
-        "resetxp_self",
-        "resetxp",
-        "subnetban",
-        "ammopack",
-        "medpack",
-        "revive",
-        "disguise",
-        "poison",
-        "nade",
-        "lol",
-        "giball",
-        "throwall",
-        "crazysettings",
-        "warsettings",
-        "multiview",
         "cheats", -- !give, !firegod
         "pconexec", -- !pconexec
         "immune", -- without this no level is protected from other admins' commands
@@ -156,7 +132,7 @@ function acl.applyDefaultPermissions()
     end
 
     if granted > 0 then
-        outputDebug("Granted "..granted.." default permission(s) to the admin levels (disable with g_defaultPermissions 0).", 3)
+        outputDebug("Granted "..granted.." default permission(s) to the Server Owner level (disable with g_defaultPermissions 0).", 3)
     end
 end
 

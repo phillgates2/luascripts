@@ -9,7 +9,7 @@ Follow-up to `DEBUG-REPORT.md`. Addresses three symptoms from the server:
   commands here.
 - `/!firegod` from the client console was unknown for the same reason.
 
-## 1. The permissions are now applied automatically
+## 1. The permissions are now applied automatically - Server Owner only
 
 The root cause of every "permission denied" was a schema gap, not a bug: a
 stock WolfAdmin database grants 21 permissions this fork's commands are
@@ -20,14 +20,19 @@ exactly what happened.
 
 WolfAdmin now heals this itself. On every game init (standalone mode, database
 connected) `acl.applyDefaultPermissions()` in `auth/acl.lua` grants the fork's
-default permission set to the levels they belong to, but only where the level
-exists and does not already have the permission:
+default permission set to **level 5 (Server Owner) only**, and only where that
+permission is not already granted:
 
 | level | gets |
 | ----- | ---- |
-| 3 (Admin) | `banguid`, `banip`, `lockplayer`, `resetxp_self` |
-| 4 (Senior Admin) | the above, plus `resetxp`, `subnetban`, `ammopack`, `medpack`, `revive`, `disguise`, `poison`, `nade`, `lol`, `giball`, `throwall`, `crazysettings`, `warsettings`, `multiview` |
-| 5 (Server Owner) | the above, plus `cheats` (`!give`, `!firegod`), `pconexec` (`!pconexec`), `immune` |
+| 5 (Server Owner) | `banguid`, `banip`, `lockplayer`, `resetxp_self`, `resetxp`, `subnetban`, `ammopack`, `medpack`, `revive`, `disguise`, `poison`, `nade`, `lol`, `giball`, `throwall`, `crazysettings`, `warsettings`, `multiview`, `cheats` (`!give`, `!firegod`), `pconexec` (`!pconexec`), `immune` |
+
+**Levels 3 and 4 are deliberately left alone.** They keep exactly the
+permissions the stock schema already gives them (burn, slap, gib, throw,
+glow, pants, pop, freeze, disorient, warn, kick, ban and so on for level 4),
+so no lower admin gains commands or privileges from this change. If you ever
+want a lower level to have one of these, grant it on purpose with
+`!acl addpermission [level] [permission]`.
 
 `immune` is included for level 5 because without it *no* level is protected:
 any level 4 admin could `!burn` the server owner. The startup audit that
@@ -39,13 +44,13 @@ how many grants were applied.
   are then managed strictly by hand with `!acl addpermission`.
 - The grants are idempotent: a second map load inserts nothing, and a database
   that is restored or replaced heals itself on the next map load.
-- `database/upgrade/permissions/*.sql` carry the same rows (now including
-  `pconexec` and `immune`) and remain available for manual use.
+- `database/upgrade/permissions/*.sql` carry the same rows and remain
+  available for manual use.
 
-Effect: `!give`, `!lol`, `!nade`, `!poison`, `!giba`, `!throwall`,
-`!ammopack`, `!medpack`, `!revive`, `!disguise`, `!crazygravity`,
-`!crazyspeed`, the war modes and the new commands below work out of the box
-for the Server Owner (level 5), and the fun set for Senior Admins (level 4).
+Effect: `!give`, `!firegod`, `!pconexec`, `!lol`, `!nade`, `!poison`, `!giba`,
+`!throwall`, `!ammopack`, `!medpack`, `!revive`, `!disguise`,
+`!crazygravity`, `!crazyspeed` and the war modes work out of the box for the
+Server Owner (level 5) - and for nobody else unless you say so.
 
 ## 2. `!firegod` - ported from etoz
 
@@ -107,8 +112,9 @@ global throws):
   (toggles, wire format, victim/immune/level checks, rcon and console paths,
   usage errors): all pass.
 - Sweep of 47 command lines at level 5 and level 4 against a stock-schema
-  database: level 5 sees **zero denials**, level 4 is denied exactly the
-  owner-only commands. No errors.
+  database: level 5 sees **zero denials**; level 4 is denied every
+  fork-added permission (it keeps its stock permissions: burn, slap, gib,
+  throw, glow, pants, pop, pip, freeze, disorient). No errors.
 - 72 hostile-argument cases (quotes, semicolons, colour codes, `%s`,
   backslashes, unicode, huge numbers, empties) against the three commands:
   no errors.
