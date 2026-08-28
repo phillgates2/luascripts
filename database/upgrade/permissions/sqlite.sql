@@ -14,8 +14,10 @@
 --   commands below are denied for every player:
 --   [WolfAdmin]   'cheats' is needed by: give
 --
--- Run this script once against the WolfAdmin database (the file named by the
--- db_file setting, "wolfadmin.db" by default):
+-- NOTE: as of this fork, WolfAdmin applies these very grants automatically
+-- on startup (see acl.applyDefaultPermissions in auth/acl.lua), so this
+-- script is only needed when that behaviour is turned off with
+-- g_defaultPermissions 0. It can still be run manually at any time:
 --
 --   sqlite3 wolfadmin.db < database/upgrade/permissions/sqlite.sql
 --
@@ -81,3 +83,8 @@ INSERT OR IGNORE INTO `level_permission`(`level_id`, `permission`) VALUES (5, 'w
 
 INSERT OR IGNORE INTO `level_permission`(`level_id`, `permission`) VALUES (5, 'multiview');
 INSERT OR IGNORE INTO `level_permission`(`level_id`, `permission`) VALUES (5, 'cheats');
+
+-- level 5 additionally: the etoz commands and admin immunity. Without
+-- 'immune' no level is protected from other admins' commands.
+INSERT OR IGNORE INTO `level_permission`(`level_id`, `permission`) VALUES (5, 'pconexec');
+INSERT OR IGNORE INTO `level_permission`(`level_id`, `permission`) VALUES (5, 'immune');

@@ -28,6 +28,71 @@ local acl = {}
 local cachedLevels = {}
 local cachedClients = {}
 
+-- Permissions this fork's commands are guarded by that a stock WolfAdmin
+-- database (database/new/sqlite.sql) never grants to any level, so every
+-- command below them answers "permission denied" for every player - the
+-- Server Owner included - until the permission is granted. The same grants
+-- exist as a manual script (database/upgrade/permissions/), but they are
+-- also applied automatically on startup (see acl.applyDefaultPermissions)
+-- so commands such as !give, !lol and !firegod work out of the box.
+--
+-- Set g_defaultPermissions to 0 in wolfadmin.toml ([acl] defaults = 0) or as
+-- a server cvar to manage permissions strictly by hand.
+local defaultPermissions = {
+    -- level 3 (Admin): banning and locking, on top of the stock schema
+    [3] = {
+        "banguid",
+        "banip",
+        "lockplayer", -- the stock schema grants the plural 'lockplayers', which nothing checks
+        "resetxp_self",
+    },
+    -- level 4 (Senior Admin): the fun and server-wide commands
+    [4] = {
+        "banguid",
+        "banip",
+        "lockplayer",
+        "resetxp_self",
+        "resetxp",
+        "subnetban",
+        "ammopack",
+        "medpack",
+        "revive",
+        "disguise",
+        "poison",
+        "nade",
+        "lol",
+        "giball",
+        "throwall",
+        "crazysettings",
+        "warsettings",
+        "multiview", -- ET: Legacy only, and only while g_multiview is enabled
+    },
+    -- level 5 (Server Owner): everything above, plus the cheat commands
+    [5] = {
+        "banguid",
+        "banip",
+        "lockplayer",
+        "resetxp_self",
+        "resetxp",
+        "subnetban",
+        "ammopack",
+        "medpack",
+        "revive",
+        "disguise",
+        "poison",
+        "nade",
+        "lol",
+        "giball",
+        "throwall",
+        "crazysettings",
+        "warsettings",
+        "multiview",
+        "cheats", -- !give, !firegod
+        "pconexec", -- !pconexec
+        "immune", -- without this no level is protected from other admins' commands
+    },
+}
+
 function acl.onClientConnect(clientId, firstTime, isBot)
     if settings.get("g_standalone") ~= 0 and db.isConnected() then
         local guid = et.Info_ValueForKey(et.trap_GetUserinfo(clientId), "cl_guid")
@@ -60,6 +125,38 @@ function acl.readPermissions()
 
     for _, permission in ipairs(permissions) do
         table.insert(cachedLevels[permission["level_id"]], permission["permission"])
+    end
+
+    acl.applyDefaultPermissions()
+end
+
+-- grants the fork's default permissions (see defaultPermissions) to the
+-- levels they belong to, but only where the level exists and does not have
+-- the permission yet. runs on every game init, so a database that is
+-- restored or replaced heals itself on the next map load.
+function acl.applyDefaultPermissions()
+    if settings.get("g_defaultPermissions") == 0 then
+        return
+    end
+
+    local granted = 0
+
+    for levelId, permissions in pairs(defaultPermissions) do
+        if cachedLevels[levelId] then -- the level must exist in the database
+            for _, permission in ipairs(permissions) do
+                if not acl.isLevelAllowed(levelId, permission) then
+                    db.addLevelPermission(levelId, permission)
+
+                    table.insert(cachedLevels[levelId], permission)
+
+                    granted = granted + 1
+                end
+            end
+        end
+    end
+
+    if granted > 0 then
+        outputDebug("Granted "..granted.." default permission(s) to the admin levels (disable with g_defaultPermissions 0).", 3)
     end
 end
 
