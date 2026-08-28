@@ -3,6 +3,11 @@
 Date: 2026-08-28 · tree: `arena/01a04718-luascripts` @ `c9a06da` · engine: ET: Legacy (`g_standalone 1`)
 Scope: every module loaded, every registered command driven, all three add-on mods, Lua 5.3.6 (ET: Legacy's version) and Lua 5.4.7.
 
+Two passes. The first drove every command in every supported mode (§2). The
+second drove the paths the first one never reached: the rcon/console command
+path, a database that answers nothing, the frame/round/map lifecycle, and
+hostile arguments (§3b).
+
 ## 1. Headline (carried over from PR #4)
 
 Your original "permission denied" symptom is a **schema** problem, not a code
@@ -194,6 +199,58 @@ console/rcon-only commands):
 if clientId and clientId ~= -1337 and text then
 ```
 
+## 3b. Second pass: lifecycle, rcon and empty-database paths
+
+Found by driving the paths the first sweep never reached. All fixed and
+re-verified (§6).
+
+| # | Sev | Bug | Trigger |
+|---|-----|-----|---------|
+| 12 | **High** | `game/sprees.lua` registered its handlers from inside `sprees.onGameInit` and `sprees.onGameStateChange`, so `events.handle()` raised "event onGameStateChange is already handled" **on every map change and every round start after the first**. `events.trigger()` does not catch errors, so that aborted the rest of `onGameInit`: `voting.load()` and `greetings.oninit` never ran again after map 1 — the vote config was never reloaded, the `nextmap` vote was never re-enabled, and greetings were never loaded | every map change, every round |
+| 13 | High | `players/greetings.lua` — same pattern, registered `onPlayerReady` from `greetings.oninit` | map 2 onwards |
+| 14 | Med | `players/greetings.lua` — the legacy `.cfg` branch crashed on a greetings file that is missing or has no `[level]` block (`admin/rules.lua` already guards this) | `g_fileGreetings` pointing at a missing/empty `.cfg` |
+| 15 | Med | `util/events.lua` — `isHandled()`/`unhandle()` iterated from index 0 on a 1-based table, so `handlers[0] == nil` made a **nil** function look already registered, producing the misleading "already handled by this function" instead of a clear error | any `events.handle(name, nil)` |
+| 16 | Med | `auth/acl.lua` — `addPlayerPermission`, `removePlayerPermission` and `copyPlayerPermissions` indexed `cachedClients[clientId]`, which is nil for the console's `clientId -1337`, so rcon `!incognito` threw (and would have written a junk player row) | rcon `!incognito` |
+| 17 | Med | `auth/acl.lua` — `getLevelName()` indexed `db.getLevel()`, which is nil when the level table has no such row; `!finger`, `!admintest` and `!listplayers` concatenate the result | level table empty or incomplete |
+| 18 | Low | `util/pagination.lua` compared a nil count | a `COUNT` query returning no row |
+| 19 | Low | `commands/admin/levinfo.lua`, `listaliases.lua`, `dewarn.lua` iterated `pairs(nil)` | DB list lookups returning nil |
+| 20 | Low | `commands/admin/readconfig.lua` concatenated `sprees.load()`, which returns nil when spree records are disabled or the map has no row | `!readconfig` with sprees disabled or no map record |
+| 21 | Low | `game/sprees.lua` — `db.getMap(...)["id"]` in `sprees.load()`, and `db.getLastAlias(...)["alias"]` in `printRecords`, `!sprees` and `!spreerecord` | map/alias rows missing |
+| 22 | Low | `commands/admin/banip.lua` — nil `db.getPlayersCount()` in the IP scan | DB answering nothing |
+
+### The map-change one, in detail
+
+`et_InitGame` runs on every map load, and `sprees.onGameInit` re-registered its
+`onGameStateChange` handler each time. Because `events.trigger()` loops over the
+handlers without `pcall`, one throwing handler aborts every handler after it,
+and the error escapes `et_InitGame`:
+
+```
+map 1:  ok
+map 2:  ./luascripts/wolfadmin/game/sprees.lua:213: event onGameStateChange is already handled by this function
+        voting.load ran 0 time(s)      <- never runs again
+round 2: ./luascripts/wolfadmin/game/sprees.lua:237: event onClientTeamChange is already handled by this function
+```
+
+Both files now register their handlers once, when the module is loaded — the
+pattern `game/voting.lua` already uses. `sprees.onGameStateChange` keeps its
+INTERMISSION branch (save and print records), and the spree handlers bail out
+when a client has left.
+
+### Looked at and found not to be bugs
+
+- **`players/players.lua:43` (`players.getGUID` on a vacated slot), 1500 hits.**
+  Only happens if `et.gentity_get(slot, "pers.netname")` returns an empty string
+  for a slot nobody occupies. The Legacy Lua API docs state that `et.gentity_get`
+  returns **nil** for NULL entities or clients, so WolfAdmin's
+  `not et.gentity_get(cmdClient, "pers.netname")` guard does catch it. The stub
+  was harsher than the engine; modelling the engine correctly makes the
+  lifecycle sweep clean.
+- **`et.gentity_get` with a non-integer slot** (e.g. `!warn 1.5`): the engine
+  returns nil for slots that do not exist, so the same guard applies.
+- **`commands/admin/sprees.lua:40` / `spreerecord.lua:45`**: same unguarded
+  alias lookup as #6, guarded now as well.
+
 ## 5. What was checked and found clean
 
 - **Every module loads and initialises** under both Lua 5.3.6 and Lua 5.4.7.
@@ -241,6 +298,28 @@ if clientId and clientId ~= -1337 and text then
   upgraded schema still gives level 5 zero denials and level 4 the same nine
   owner-only commands.
 
+### Second pass (§3b)
+
+- **Lifecycle**: 40 frames, obituaries, spawns, revives, userinfo changes,
+  console text, half the server disconnecting, a map restart and a shutdown —
+  then every command again. Previously: one Lua error per map change and per
+  round, with `voting.load` and `greetings.oninit` never running again. Now:
+  **no errors**, and `voting.load` runs on every map load (verified for maps
+  2-4).
+- **Greetings**: `!readconfig` and map loads stay clean whether
+  `g_fileGreetings` is unset, points at a missing `.cfg`, an empty `.cfg`, or a
+  valid one.
+- **rcon path**: all 109 admin commands driven as rcon `!command`, i.e. with
+  `clientId -1337` — no errors (`!incognito` previously threw in
+  `acl.addPlayerPermission`).
+- **Null database** (every lookup returns nil) and **empty database** (every
+  lookup returns `{}`/`0`), all commands: no errors. These found #17-#22.
+- **Argument fuzz**: quotes, semicolons, colour codes, `%s`, backslashes,
+  unicode, 300-character strings, `0x10`, `1.5`, `-999999999`,
+  `99999999999999999999`, empty and whitespace-only arguments: no errors.
+- **Client command path** (`/command` in chat, and client commands from the
+  console): no errors.
+
 ### Choice made for #4
 
 "Permanent" is stored as `expires = 2147483647`, the largest timestamp that fits
@@ -251,12 +330,23 @@ years) would need MySQL's `expires` column widened to `BIGINT`.
 
 ## 7. How this was tested
 
-The engine is stubbed (`et.*` API, 20 fake clients, filesystem, shrubbot), the
+The engine is stubbed (`et.*` API, fake clients, filesystem, shrubbot), the
 real `wolfadmin/main.lua` is loaded unmodified, and a strict-globals metatable
 makes any read of an undefined global raise instead of silently returning nil.
-Harness lives outside the repo in `/tmp/harness` (`stub.lua`, `probe.lua`,
-`targeted.lua`, `scopecheck.py`); nothing was added to the repository except
-this report.
+Harness lives outside the repo in `/tmp/harness`; nothing was added to the
+repository except this report.
+
+| file | what it does |
+| --- | --- |
+| `stub.lua` | the `et.*` API, fake clients, filesystem, shrubbot, strict globals |
+| `probe.lua` | first pass: every command x 12 argument shapes, 6 scenarios |
+| `probe2.lua` | second pass: rcon path, null/empty database, lifecycle, hostile arguments, client commands |
+| `targeted.lua` | scripted reproductions that need a state to be set up first (mute someone before `!vunmute`, etc.) |
+| `scopecheck.py` | scope-aware static scan for reads of globals nothing defines (validated against the pre-fix `cmdClient` bug) |
+
+The stub models the engine as documented: `et.gentity_get` returns nil for a
+slot with no client, which is what WolfAdmin's "no connected player" guards
+depend on.
 
 Known harness artifacts (not bugs): `auth/shrubbot.lua:87 "failed to open
 shrubbot.cfg"` — the stub has no `shrubbot.cfg`; real add-on servers do.

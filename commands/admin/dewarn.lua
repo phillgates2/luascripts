@@ -62,7 +62,7 @@ function commandDeWarn(clientId, command, victim, warningId)
 
     local warnings = {}
 
-    for _, item in pairs(history.getList(cmdClient, 100, 0)) do
+    for _, item in pairs(history.getList(cmdClient, 100, 0) or {}) do
         if item["type"] == "warn" then
             table.insert(warnings, item)
         end

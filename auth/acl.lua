@@ -100,7 +100,9 @@ end
 function acl.getLevelName(levelId)
     local level = db.getLevel(levelId)
 
-    return level["name"]
+    -- the name ends up in chat output, so hand back a string when the level
+    -- record is missing instead of nil, which breaks the caller
+    return level and level["name"] or "unknown"
 end
 
 function acl.getLevelPermissions(levelId)
@@ -194,12 +196,26 @@ function acl.getPlayerPermissions(clientId)
 end
 
 function acl.addPlayerPermission(clientId, permission)
+    if not cachedClients[clientId] then
+        -- not a connected player (the console passes clientId -1337): there is
+        -- no player record to attach a permission to
+        if clientId < 0 then
+            return
+        end
+
+        cachedClients[clientId] = {}
+    end
+
     db.addPlayerPermission(db.getPlayerId(clientId), permission)
 
     table.insert(cachedClients[clientId], permission)
 end
 
 function acl.removePlayerPermission(clientId, permission)
+    if not cachedClients[clientId] then
+        return
+    end
+
     db.removePlayerPermission(db.getPlayerId(clientId), permission)
 
     for i, levelPermission in ipairs(cachedClients[clientId]) do
@@ -210,6 +226,10 @@ function acl.removePlayerPermission(clientId, permission)
 end
 
 function acl.copyPlayerPermissions(clientId, newClientId)
+    if not cachedClients[clientId] or not cachedClients[newClientId] then
+        return
+    end
+
     db.copyPlayerPermissions(db.getPlayerId(clientId), db.getPlayerId(newClientId))
 
     cachedClients[newClientId] = tables.copy(cachedClients[clientId])

@@ -30,10 +30,13 @@ local settings = wolfa_requireModule("util.settings")
 
 function commandReadconfig(clientId, command)
     settings.load()
-    local bannersCount = banners.load()
-    local rulesCount = rules.load()
-    local greetingsCount = greetings.load()
-    local spreesCount = sprees.load()
+
+    -- every loader returns nil instead of a count when it is disabled or the
+    -- file is missing, and the message below concatenates all of them
+    local bannersCount = tonumber(banners.load()) or 0
+    local rulesCount = tonumber(rules.load()) or 0
+    local greetingsCount = tonumber(greetings.load()) or 0
+    local spreesCount = tonumber(sprees.load()) or 0
 
     et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"readconfig: loaded "..bannersCount.." banners, "..rulesCount.." rules, "..greetingsCount.." greetings, "..spreesCount.." sprees\";")
 
@@ -43,10 +46,13 @@ commands.addadmin("readconfig", commandReadconfig, auth.PERM_READCONFIG, "reload
 
 function commandReadconfig(clientId, command)
     settings.load()
-    local bannersCount = banners.load()
-    local rulesCount = rules.load()
-    local greetingsCount = greetings.load()
-    local spreesCount = sprees.load()
+
+    -- every loader returns nil instead of a count when it is disabled or the
+    -- file is missing, and the message below concatenates all of them
+    local bannersCount = tonumber(banners.load()) or 0
+    local rulesCount = tonumber(rules.load()) or 0
+    local greetingsCount = tonumber(greetings.load()) or 0
+    local spreesCount = tonumber(sprees.load()) or 0
 
     et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"readconfig: loaded "..bannersCount.." banners, "..rulesCount.." rules, "..greetingsCount.." greetings, "..spreesCount.." sprees\";")
 

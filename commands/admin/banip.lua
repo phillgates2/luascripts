@@ -33,11 +33,11 @@ local util = wolfa_requireModule("util.util")
 local function findPlayersByIp(ip)
     local matches = {}
 
-    local playersCount = db.getPlayersCount()
+    local playersCount = tonumber(db.getPlayersCount()) or 0
     local offset, pageSize = 0, 100
 
     while offset < playersCount do
-        for _, player in pairs(db.getPlayers(pageSize, offset)) do
+        for _, player in pairs(db.getPlayers(pageSize, offset) or {}) do
             if player["ip"] == ip then
                 table.insert(matches, player)
             end

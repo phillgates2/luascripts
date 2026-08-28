@@ -44,10 +44,10 @@ function events.isHandled(name, func)
         error("event not added: "..name, 2)
     end
 
-    local handlers = events.get(name)
-
-    for i = 0, #handlers do
-        if handlers[i] == func then
+    -- handlers are stored with table.insert, so they start at 1. iterating
+    -- from 0 made a nil func look like a handler that was already registered
+    for i = 1, #events.get(name) do
+        if events.get(name)[i] == func then
             return true
         end
     end
@@ -78,7 +78,7 @@ function events.unhandle(name, func)
 
     local handlers = events.get(name)
 
-    for i = 0, #handlers do
+    for i = 1, #handlers do
         if handlers[i] == func then
             table.remove(handlers, i)
         end

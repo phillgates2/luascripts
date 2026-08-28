@@ -35,7 +35,7 @@ function commandLevList(clientId, command)
 
     local levels = auth.getLevels()
 
-    if #levels == 0 then
+    if not levels or #levels == 0 then
         et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dlevlist: ^9no admin levels have been defined.\";")
 
         return true
