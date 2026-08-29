@@ -38,7 +38,7 @@ local function grenadeExplode(cmdClient)
 end
 
 local function isValidVictim(clientId, cmdClient)
-    if auth.isPlayerAllowed(cmdClient, auth.PERM_IMMUNE) then
+    if auth.isPlayerAllowed(cmdClient, auth.PERM_IMMUNE) and auth.getPlayerLevel(cmdClient) > auth.getPlayerLevel(clientId) then
         et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dlol: ^7"..et.gentity_get(cmdClient, "pers.netname").." ^9is immune to this command.\";")
 
         return false
@@ -64,7 +64,7 @@ function commandLol(clientId, command, victim, amount)
 
     if victim == nil or victim == "all" or victim == "-1" then
         for i = 0, tonumber(et.trap_Cvar_Get("sv_maxclients")) - 1 do
-            if players.isConnected(i) and not auth.isPlayerAllowed(i, auth.PERM_IMMUNE) then
+            if players.isConnected(i) and not (auth.isPlayerAllowed(i, auth.PERM_IMMUNE) and auth.getPlayerLevel(i) > auth.getPlayerLevel(clientId)) then
                 local team = et.gentity_get(i, "sess.sessionTeam")
 
                 if team == constants.TEAM_AXIS or team == constants.TEAM_ALLIES then

@@ -58,7 +58,11 @@ function commandFiregod(clientId, command, victim, ...)
         return true
     end
 
-    if auth.isPlayerAllowed(cmdClient, auth.PERM_IMMUNE) then
+    -- an immune player is protected from admins *below* their level, but a
+    -- peer or superior (e.g. one Server Owner firegod'ing another) is allowed
+    -- to target them. the higher-level check below still stops lower admins
+    -- from touching someone above them.
+    if auth.isPlayerAllowed(cmdClient, auth.PERM_IMMUNE) and auth.getPlayerLevel(cmdClient) > auth.getPlayerLevel(clientId) then
         et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dfiregod: ^7"..et.gentity_get(cmdClient, "pers.netname").." ^9is immune to this command.\";")
 
         return true

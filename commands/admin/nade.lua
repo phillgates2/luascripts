@@ -59,7 +59,7 @@ function commandNade(clientId, command, victim, amount)
         return true
     end
 
-    if auth.isPlayerAllowed(cmdClient, auth.PERM_IMMUNE) then
+    if auth.isPlayerAllowed(cmdClient, auth.PERM_IMMUNE) and auth.getPlayerLevel(cmdClient) > auth.getPlayerLevel(clientId) then
         et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dnade: ^7"..et.gentity_get(cmdClient, "pers.netname").." ^9is immune to this command.\";")
 
         return true
