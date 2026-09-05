@@ -58,12 +58,12 @@ function commandPconexec(clientId, command, victim, ...)
         return true
     end
 
-    if auth.isPlayerAllowed(cmdClient, auth.PERM_IMMUNE) then
-        et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dpconexec: ^7"..et.gentity_get(cmdClient, "pers.netname").." ^9is immune to this command.\";")
-
-        return true
-    elseif auth.getPlayerLevel(cmdClient) > auth.getPlayerLevel(clientId) then
-        et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dpconexec: ^9sorry, but your intended victim has a higher admin level than you do.\";")
+    if not auth.canTarget(clientId, cmdClient) then
+        if auth.isTargetProtected(cmdClient) then
+            et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dpconexec: ^7"..et.gentity_get(cmdClient, "pers.netname").." ^9is immune to this command.\";")
+        else
+            et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dpconexec: ^9sorry, but your intended victim has a higher admin level than you do.\";")
+        end
 
         return true
     end

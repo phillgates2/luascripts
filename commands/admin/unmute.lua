@@ -48,6 +48,16 @@ function commandUnmute(clientId, command, victim)
         return true
     end
     
+    if not auth.canTarget(clientId, cmdClient) then
+        if auth.isTargetProtected(cmdClient) then
+            et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dunmute: ^7"..et.gentity_get(cmdClient, "pers.netname").." ^9is immune to this command.\";")
+        else
+            et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dunmute: ^9sorry, but your intended victim has a higher admin level than you do.\";")
+        end
+
+        return true
+    end
+
     if not players.isMuted(cmdClient) then
         et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dunmute: ^9no player by that name or slot # is muted\";")
         

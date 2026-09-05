@@ -123,6 +123,30 @@ auth.PERM_MULTIVIEW = "multiview"
 auth.PERM_SPY = "spy"
 auth.PERM_IMMUNE = "immune"
 
+-- A client is a protected target when it reached the configured immunity
+-- level (g_immuneLevel, default 5 = Server Owner) or carries the `immune`
+-- permission. The latter lets a server grant the protection to a lower level
+-- without giving that level every owner permission.
+function auth.isTargetProtected(clientId)
+    local immuneLevel = tonumber(settings.get("g_immuneLevel")) or 5
+
+    return auth.getPlayerLevel(clientId) >= immuneLevel
+        or auth.isPlayerAllowed(clientId, auth.PERM_IMMUNE)
+end
+
+-- Whether an admin may run a player-targeting command on a client. A player
+-- always controls their own slot (self-targeting is allowed), and same- or
+-- higher-level admins may still target a protected player. Only admins below
+-- the target's level are blocked, so a Server Owner is safe from lower staff
+-- without being unable to use a command on themselves or another owner.
+function auth.canTarget(invokerId, victimId)
+    if invokerId == victimId then
+        return true
+    end
+
+    return auth.getPlayerLevel(invokerId) >= auth.getPlayerLevel(victimId)
+end
+
 -- as this module serves as a wrapper/super class, we load the selected database
 -- system in this function. might have to think of a better way to implement
 -- this, but it will suffice.

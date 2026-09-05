@@ -122,3 +122,36 @@ global throws):
   and no default permissions are written to a mod's database.
 - All 150 `.lua` files pass a syntax check; a second map load re-grants
   nothing (idempotency).
+
+## 5. Configurable immune level + consistent target checks
+
+Player-targeting punishment/game-effect commands now share one immunity rule
+instead of a mix of "immune permission only", "immune + higher level" and
+`"!"`-flag checks that never matched in standalone mode.
+
+- New server setting `g_immuneLevel` (default **5**, Server Owner; set
+  `[acl] immune = 5` in `wolfadmin.toml`). A player is protected when their
+  level reaches this value **or** they carry the `immune` permission
+  (`auth.isTargetProtected`). The level path works even with
+  `g_defaultPermissions 0`, so an owner stays protected without relying on a
+  database permission row.
+- New `auth.canTarget(invoker, victim)`: a protected player can still be
+  targeted by themselves and by same- or higher-level admins. Only someone
+  below their level is blocked. The existing level hierarchy (a lower-level
+  admin cannot target a higher-level player) is preserved for every target;
+  `g_immuneLevel`/`immune` decides which target gets the "immune" reply.
+- Applied to: `!give`, `!firegod`, `!pconexec`, `!ban`, `!banip`
+  (by connected player name/slot; raw-IP, `!banguid` and `!subnetban` entries
+  are unchanged because they do not resolve to a single connected player), `!kick`, `!mute`,
+  `!unmute`, `!vmute`, `!vunmute`, `!warn`, `!dewarn`, `!slap`, `!gib`,
+  `!giba`, `!burn`, `!freeze`, `!disorient`, `!orient`, `!put`, `!rename`,
+  `!plock`, `!punlock`, `!resetxp`, `!throw`, `!throwall`, `!lol`, `!nade`,
+  `!poison`, `!pants`, `!pop`, `!pip`, `!glow`, `!medpack`, `!ammopack`,
+  `!disguise`, `!dw`, `!revive`. The all-player variants (`!giba`,
+  `!throwall`, `!freeze all`, `!lol all`, `!pop all`, `!pip all`) skip only
+  players the invoker is not allowed to target.
+- Fixed `!put`/`!gib`/`!slap`/`!plock` using the literal `"!"` flag instead of
+  `auth.PERM_IMMUNE` (they never protected a Server Owner in standalone mode),
+  and fixed `!put`'s higher-level check comparing the victim against itself.
+- Commands that merely look a player up (`!finger`, `!stats`, `!country`,
+  `!showhistory`, `!listaliases`, ...) are intentionally unchanged.

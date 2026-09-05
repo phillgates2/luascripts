@@ -81,6 +81,16 @@ function commandBanIP(clientId, command, victim, ...)
             return true
         end
 
+        if not auth.canTarget(clientId, cmdClient) then
+            if auth.isTargetProtected(cmdClient) then
+                et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dbanip: ^7"..et.gentity_get(cmdClient, "pers.netname").." ^9is immune to this command.\";")
+            else
+                et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dbanip: ^9sorry, but your intended victim has a higher admin level than you do.\";")
+            end
+
+            return true
+        end
+
         ip = players.getIP(cmdClient)
     end
 

@@ -46,6 +46,10 @@ function commandWarn(clientId, command, victim, ...)
         return false
     end
 
+    if not auth.canTarget(clientId, cmdClient) then
+        return false
+    end
+
     history.add(cmdClient, clientId, os.time(), "warn", table.concat({...}, " "))
 
     return false
@@ -75,8 +79,12 @@ function commandWarn(clientId, command, victim, ...)
         return true
     end
 
-    if auth.getPlayerLevel(cmdClient) > auth.getPlayerLevel(clientId) then
-        et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dwarn: ^9sorry, but your intended victim has a higher admin level than you do.\";")
+    if not auth.canTarget(clientId, cmdClient) then
+        if auth.isTargetProtected(cmdClient) then
+            et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dwarn: ^7"..et.gentity_get(cmdClient, "pers.netname").." ^9is immune to this command.\";")
+        else
+            et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dwarn: ^9sorry, but your intended victim has a higher admin level than you do.\";")
+        end
 
         return true
     end
