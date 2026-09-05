@@ -47,6 +47,7 @@ local data = {
     ["g_renameLimit"] = 80,
     ["g_debugWolfAdmin"] = 0,
     ["g_defaultPermissions"] = 1,
+    ["g_immuneLevel"] = 5,
     ["omnibot_maxbots"] = 10,
     ["db_type"] = "sqlite3",
     ["db_file"] = "wolfadmin.db",
@@ -85,7 +86,8 @@ local cfgStructure = {
         ["maxrenames"] = "g_renameLimit"
     },
     ["acl"] = {
-        ["defaults"] = "g_defaultPermissions"
+        ["defaults"] = "g_defaultPermissions",
+        ["immune"] = "g_immuneLevel"
     },
     ["balancer"] = {
         ["mindif"] = "g_evenerMinDifference",

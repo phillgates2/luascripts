@@ -43,7 +43,7 @@ function commandPip(clientId, command, victim)
 
     if victim == nil or victim == "all" or victim == "-1" then
         for i = 0, tonumber(et.trap_Cvar_Get("sv_maxclients")) - 1 do
-            if players.isConnected(i) and not auth.isPlayerAllowed(i, auth.PERM_IMMUNE) then
+            if players.isConnected(i) and auth.canTarget(clientId, i) then
                 table.insert(targets, i)
             end
         end
@@ -66,12 +66,12 @@ function commandPip(clientId, command, victim)
             return true
         end
 
-        if auth.isPlayerAllowed(cmdClient, auth.PERM_IMMUNE) then
-            et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dpip: ^7"..et.gentity_get(cmdClient, "pers.netname").." ^9is immune to this command.\";")
-
-            return true
-        elseif auth.getPlayerLevel(cmdClient) > auth.getPlayerLevel(clientId) then
-            et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dpip: ^9sorry, but your intended victim has a higher admin level than you do.\";")
+        if not auth.canTarget(clientId, cmdClient) then
+            if auth.isTargetProtected(cmdClient) then
+                et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dpip: ^7"..et.gentity_get(cmdClient, "pers.netname").." ^9is immune to this command.\";")
+            else
+                et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dpip: ^9sorry, but your intended victim has a higher admin level than you do.\";")
+            end
 
             return true
         end

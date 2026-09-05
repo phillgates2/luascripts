@@ -31,7 +31,7 @@ function commandThrowAll(clientId, command)
     local count = 0
 
     for i = 0, tonumber(et.trap_Cvar_Get("sv_maxclients")) - 1 do
-        if players.isConnected(i) and not (auth.isPlayerAllowed(i, auth.PERM_IMMUNE) and auth.getPlayerLevel(i) > auth.getPlayerLevel(clientId)) then
+        if players.isConnected(i) and auth.canTarget(clientId, i) then
             local team = et.gentity_get(i, "sess.sessionTeam")
 
             if (team == constants.TEAM_AXIS or team == constants.TEAM_ALLIES) and et.gentity_get(i, "health") > 0 then
