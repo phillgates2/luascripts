@@ -100,7 +100,7 @@ local KNIFE_PICKUP_RANGE    = 48
 local KNIFE_HEAD_HEIGHT     = 46
 
 -- misc
-local DEBUG                 = false
+DEBUG                 = false
 -- ==========================================================================
 
 -- -------------------------- constants ------------------------------------
@@ -179,9 +179,9 @@ local KICKABLE_WEAPONS = {
 	[WP_SMOKE_BOMB] = true,
 }
 
-local DEG2RAD = math.pi / 180
+DEG2RAD = math.pi / 180
 
-local MODULE_TAG = "[wolfadmin:gameplay]"
+MODULE_TAG = "[wolfadmin:gameplay]"
 
 -- ============================== state ====================================
 local client_slots
@@ -204,7 +204,20 @@ local poisoned = {}            -- poison_needle [cnum] = { attacker, expires, ne
 local knives = {}              -- throwable_knife [ent] = { owner, weapon, last, landed }
 local next_throw = {}
 
+local enabled = true
+
 -- ============================== helpers ==================================
+
+local function is_gameplay_enabled()
+	if type(et) == "table" and type(et.trap_Cvar_Get) == "function" then
+		local v = et.trap_Cvar_Get("g_gameplay")
+		if v ~= "" then
+			local n = tonumber(v)
+			if n ~= nil then return n ~= 0 end
+		end
+	end
+	return true
+end
 
 local function log(msg)
 	if type(et) == "table" and type(et.G_Print) == "function" then
@@ -247,7 +260,16 @@ local function has_client(num)
 		or no_client[num] then
 		return false
 	end
-	return et.gentity_get(num, "inuse") == 1
+	local ok, v = pcall(et.gentity_get, num, "inuse")
+	if not ok then
+		if tostring(v):find("invalid") then no_client[num] = true end
+		return false
+	end
+	return v == 1
+end
+
+local function clear_no_client(num)
+	no_client[num] = nil
 end
 
 local function team_of(num)
@@ -340,13 +362,14 @@ end
 -- ========================= ADRENALINE + SLOT 7 ===========================
 
 local function adrenaline_grant(clientNum)
+	if type(et.AddWeaponToPlayer) ~= "function" then return end
 	local ammo, clip = ADRENALINE_AMMO, ADRENALINE_AMMOCLIP
 	if has_weapon(clientNum, WP_MEDIC_SYRINGE) then
 		ammo  = client_get(clientNum, "ps.ammo",  WP_MEDIC_SYRINGE) or 0
 		clip  = (client_get(clientNum, "ps.ammoclip", WP_MEDIC_SYRINGE) or 0)
 			+ ADRENALINE_AMMOCLIP
 	end
-	et.AddWeaponToPlayer(clientNum, WP_MEDIC_ADRENALINE, ammo, clip, 0)
+	pcall(et.AddWeaponToPlayer, clientNum, WP_MEDIC_ADRENALINE, ammo, clip, 0)
 end
 
 local function adrenaline_strip(clientNum)
@@ -398,10 +421,15 @@ end
 local function is_slot7_command(command)
 	if type(command) ~= "string" then return false end
 	local c = command:lower()
-	if c == SLOT7_TOGGLE_COMMAND or c == "slot7" then return true end
-	if c == "weaponbank" or c == "weaponslot" then
+	if c == SLOT7_TOGGLE_COMMAND or c == "slot7" or c == "togglemine" then return true end
+	if c == "weaponbank" or c == "weaponslot" or c:find("weaponbank") or c:find("weaponslot") then
 		if type(et.trap_Argv) == "function" then
-			return tonumber(et.trap_Argv(1) or "") == 7
+			local a1 = et.trap_Argv(1) or ""
+			if tonumber(a1) == 7 then return true end
+		end
+		-- handle \"weaponbank 7\" passed as single string
+		if c:match("weaponbank%s+7") or c:match("weaponslot%s+7") or c == "weaponbank 7" or c == "weaponslot 7" then
+			return true
 		end
 	end
 	return false
@@ -467,13 +495,13 @@ end
 
 -- ============================ KICK PROJECTILES ===========================
 
-local KICK_CONE_COS = math.cos(KICK_CONE_HALF_ANGLE * DEG2RAD)
-local KICK_RANGE_SQ = KICK_RANGE * KICK_RANGE
-local KICK_STATIONARY_SQ = KICK_STATIONARY_SPEED * KICK_STATIONARY_SPEED
+KICK_CONE_COS = math.cos(KICK_CONE_HALF_ANGLE * DEG2RAD)
+KICK_RANGE_SQ = KICK_RANGE * KICK_RANGE
+KICK_STATIONARY_SQ = KICK_STATIONARY_SPEED * KICK_STATIONARY_SPEED
 
 local function kick_collect_players(players)
 	for i = 0, get_client_slots() - 1 do
-		if et.gentity_get(i, "inuse") == 1 then
+		if has_client(i) then
 			local team = client_get(i, "sess.sessionTeam")
 			local h    = client_get(i, "ps.stats", STAT_HEALTH)
 			if team and team ~= TEAM_FREE and team ~= TEAM_SPECTATOR
@@ -517,12 +545,12 @@ local function do_kick(p, pos, pl, levelTime)
 	if len < 1 then len = 1 end
 	local vx, vy, vz = dx/len*KICK_POWER, dy/len*KICK_POWER, dz/len*KICK_POWER + KICK_UP
 	local nb = { pos[1], pos[2], pos[3] + KICK_POP }
-	local tr = et.gentity_get(p, "s.pos")
-	if not tr then return end
+	local ok, tr = pcall(et.gentity_get, p, "s.pos")
+	if not ok or not tr then return end
 	tr.trType = TR_GRAVITY; tr.trTime = levelTime
 	tr.trBase = nb; tr.trDelta = {vx, vy, vz}
-	et.gentity_set(p, "s.pos", tr)
-	et.gentity_set(p, "r.currentOrigin", nb)
+	pcall(et.gentity_set, p, "s.pos", tr)
+	pcall(et.gentity_set, p, "r.currentOrigin", nb)
 	last_kick[p] = levelTime
 	if KICK_SOUND and kick_sound_index > 0 and type(et.G_Sound) == "function" then
 		pcall(et.G_Sound, p, kick_sound_index)
@@ -645,10 +673,14 @@ end
 local function is_slot5_command(command)
 	if type(command) ~= "string" then return false end
 	local c = command:lower()
-	if c == SLOT5_TOGGLE_COMMAND or c == "slot5" then return true end
-	if c == "weaponbank" or c == "weaponslot" then
+	if c == SLOT5_TOGGLE_COMMAND or c == "slot5" or c == "poisonneedle" then return true end
+	if c == "weaponbank" or c == "weaponslot" or c:find("weaponbank") or c:find("weaponslot") then
 		if type(et.trap_Argv) == "function" then
-			return tonumber(et.trap_Argv(1) or "") == 5
+			local a1 = et.trap_Argv(1) or ""
+			if tonumber(a1) == 5 then return true end
+		end
+		if c:match("weaponbank%s+5") or c:match("weaponslot%s+5") or c == "weaponbank 5" or c == "weaponslot 5" then
+			return true
 		end
 	end
 	return false
@@ -729,9 +761,13 @@ local function is_slot2_command(command)
 	if type(command) ~= "string" then return false end
 	local c = command:lower()
 	if c == "slot2" then return true end
-	if c == "weaponbank" or c == "weaponslot" then
+	if c == "weaponbank" or c == "weaponslot" or c:find("weaponbank") or c:find("weaponslot") then
 		if type(et.trap_Argv) == "function" then
-			return tonumber(et.trap_Argv(1) or "") == 2
+			local a1 = et.trap_Argv(1) or ""
+			if tonumber(a1) == 2 then return true end
+		end
+		if c:match("weaponbank%s+2") or c:match("weaponslot%s+2") or c == "weaponbank 2" or c == "weaponslot 2" then
+			return true
 		end
 	end
 	return false
@@ -831,199 +867,199 @@ end
 
 -- ========================= EVENT HANDLERS ================================
 
--- runs every server frame
+-- runs every server frame - each feature isolated
 local function on_game_frame(levelTime)
-	-- combine all per-frame work in one pcall so one feature's error
-	-- doesn't kill the whole callback
-	local ok, err = pcall(function()
-
-	-- --- adrenaline: strip medics ---
+	-- adrenaline strip medics
 	if ADRENALINE_ENABLE then
-		for i = 0, get_client_slots() - 1 do
-			if is_on_team(i) and class_of(i) == PC_MEDIC then
-				adrenaline_strip(i)
+		local ok, err = pcall(function()
+			for i = 0, get_client_slots() - 1 do
+				if is_on_team(i) and class_of(i) == PC_MEDIC then
+					adrenaline_strip(i)
+				end
 			end
-		end
+		end)
+		if not ok then err_once("adrenaline_frame", err) end
 	end
 
-	-- --- disguise break ---
+	-- disguise break
 	if DISGUISE_BREAK_ENABLE then
-		for i = 0, get_client_slots() - 1 do
-			if not has_client(i) then
-				last_weapon[i] = nil
-			else
-				local team = client_get(i, "sess.sessionTeam")
-				local h    = client_get(i, "ps.stats", STAT_HEALTH)
-				local wp   = client_get(i, "ps.weapon")
-				if not team or team == TEAM_SPECTATOR or not wp
-					or not h or h <= 0 then
+		local ok, err = pcall(function()
+			for i = 0, get_client_slots() - 1 do
+				if not has_client(i) then
 					last_weapon[i] = nil
 				else
-					local prev = last_weapon[i]
-					last_weapon[i] = wp
-					if prev ~= nil and not same_base_weapon(prev, wp) and is_disguised(i) then
-						local o  = client_get(i, "ps.origin")
-						local va = client_get(i, "ps.viewangles")
-						local vh = client_get(i, "ps.viewheight")
-						if o and va then
-							local eye = { o[1], o[2], o[3] + (vh or 32) }
-							-- NOTE: covert_disguise_break uses yaw/pitch order
-							if disguise_enemy_in_front(i, eye, view_forward_yaw_pitch(va)) then
-								break_disguise(i)
-							end
-						end
-					end
-				end
-			end
-		end
-	end
-
-	-- --- kick projectiles ---
-	if KICK_ENABLE then
-		local nades, missiles, top_ent = {}, 0, -1
-		for e = MAX_CLIENTS, MAX_ENTITIES - 1 do
-			if et.gentity_get(e, "inuse") == 1 then
-				top_ent = e
-				if et.gentity_get(e, "s.eType") == ET_MISSILE then
-					missiles = missiles + 1
-					local wp = et.gentity_get(e, "s.weapon")
-					if wp and KICKABLE_WEAPONS[wp] then
-						local pos = et.gentity_get(e, "origin")
-						if pos then nades[#nades+1] = { e, pos } end
-					end
-				end
-			end
-		end
-		if DEBUG and (not last_kick_debug or levelTime - last_kick_debug >= 2000) then
-			last_kick_debug = levelTime
-			local pl = {}
-			kick_collect_players(pl)
-			log("debug kickables=" .. #nades .. " missiles=" .. missiles
-				.. " top=" .. top_ent .. " players=" .. #pl)
-		end
-		if #nades > 0 then
-			local players = {}
-			kick_collect_players(players)
-			if #players > 0 then
-				for _, n in ipairs(nades) do
-					local p, pos = n[1], n[2]
-					if not last_kick[p] or levelTime - last_kick[p] >= KICK_COOLDOWN_MS then
-						for _, pl in ipairs(players) do
-							local dx = pos[1] - pl.origin[1]
-							local dy = pos[2] - pl.origin[2]
-							local dz = pos[3] - (pl.origin[3] + 8)
-							if dx*dx + dy*dy + dz*dz <= KICK_RANGE_SQ
-								and pl.speed2 <= KICK_STATIONARY_SQ
-								and kick_looking_at(pl, pos) then
-								do_kick(p, pos, pl, levelTime)
-								break
-							end
-						end
-					end
-				end
-			end
-		end
-	end
-
-	-- --- no-combat-selfkill: stillness tracking ---
-	if NOKILL_ENABLE then
-		for c = 0, get_client_slots() - 1 do
-			if has_client(c) and team_of(c) and is_alive(c) then
-				local o = client_get(c, "ps.origin")
-				if o then
-					local prev = last_origin[c]
-					if prev and prev[1] == o[1] and prev[2] == o[2] and prev[3] == o[3] then
-						if not still_since[c] then still_since[c] = levelTime end
+					local team = client_get(i, "sess.sessionTeam")
+					local h    = client_get(i, "ps.stats", STAT_HEALTH)
+					local wp   = client_get(i, "ps.weapon")
+					if not team or team == TEAM_SPECTATOR or not wp or not h or h <= 0 then
+						last_weapon[i] = nil
 					else
-						still_since[c] = nil
-					end
-					last_origin[c] = { o[1], o[2], o[3] }
-				end
-			else
-				still_since[c] = nil
-				last_origin[c] = nil
-			end
-		end
-	end
-
-	-- --- poison ticks ---
-	if POISON_ENABLE then
-		for target, p in pairs(poisoned) do
-			if not has_client(target) or not is_alive(target) or team_of(target) == nil then
-				poisoned[target] = nil
-			elseif levelTime >= p.expires then
-				poisoned[target] = nil
-				if POISON_NOTIFY_VICTIM then cp(target, "^2the poison wears off") end
-			elseif levelTime >= p.next_tick then
-				p.next_tick = levelTime + POISON_TICK_MS
-				local attacker = p.attacker
-				if not has_client(attacker) then attacker = target end
-				pcall(et.G_Damage, target, attacker, attacker,
-					POISON_TICK_DAMAGE, DAMAGE_NO_KNOCKBACK, MOD_SYRINGE)
-			end
-		end
-	end
-
-	-- --- throwable knife flight / pickup ---
-	if KNIFE_ENABLE then
-		for ent, k in pairs(knives) do
-			if et.gentity_get(ent, "inuse") ~= 1 then
-				knives[ent] = nil
-			elseif k.landed then
-				if levelTime - k.landed >= KNIFE_LIFETIME_MS then
-					knife_free(ent)
-				else
-					local pos = et.gentity_get(ent, "r.currentOrigin")
-						or et.gentity_get(ent, "origin")
-					if pos then
-						for c = 0, get_client_slots() - 1 do
-							if has_client(c) and is_alive(c) and team_of(c) then
-								local o = client_get(c, "ps.origin")
-								if o and dist2(o, pos) <= KNIFE_PICKUP_RANGE*KNIFE_PICKUP_RANGE then
-									if knife_give_back(c, k.weapon) then
-										knife_free(ent)
-										break
-									end
+						local prev = last_weapon[i]
+						last_weapon[i] = wp
+						if prev ~= nil and not same_base_weapon(prev, wp) and is_disguised(i) then
+							local o  = client_get(i, "ps.origin")
+							local va = client_get(i, "ps.viewangles")
+							local vh = client_get(i, "ps.viewheight")
+							if o and va then
+								local eye = { o[1], o[2], o[3] + (vh or 32) }
+								if disguise_enemy_in_front(i, eye, view_forward_yaw_pitch(va)) then
+									break_disguise(i)
 								end
 							end
 						end
 					end
 				end
-			else
-				local pos = et.gentity_get(ent, "r.currentOrigin")
-					or et.gentity_get(ent, "origin")
-				if pos then
-					local tr
-					if type(et.trap_Trace) == "function" then
-						local ok, t = pcall(et.trap_Trace, k.last, nil, nil, pos, ent, MASK_SHOT)
-						if ok and type(t) == "table" then tr = t end
-					end
-					if tr then
-						local hitent = tr.entityNum
-						local frac   = tr.fraction or 1
-						if type(hitent) == "number" and hitent < get_client_slots()
-							and has_client(hitent) and is_alive(hitent)
-							and hitent ~= k.owner then
-							knife_hit_player(ent, k, hitent, tr.endpos or pos)
-							knife_free(ent)
-						elseif frac < 1 then
-							local endpos = tr.endpos or pos
-							pcall(et.gentity_set, ent, "s.pos", {
-								trType = TR_STATIONARY, trTime = levelTime,
-								trBase = endpos, trDelta = {0,0,0},
-							})
-							pcall(et.gentity_set, ent, "r.currentOrigin", endpos)
-							k.landed = levelTime
-						end
-					end
-					k.last = pos
-				end
 			end
-		end
+		end)
+		if not ok then err_once("disguise_frame", err) end
 	end
 
-	end)
-	if not ok then err_once("runframe", err) end
+	-- kick projectiles
+	if KICK_ENABLE then
+		local ok, err = pcall(function()
+			local nades, missiles, top_ent = {}, 0, -1
+			for e = MAX_CLIENTS, MAX_ENTITIES - 1 do
+				local ok2, inuse = pcall(et.gentity_get, e, "inuse")
+				if ok2 and inuse == 1 then
+					top_ent = e
+					local ok3, etype = pcall(et.gentity_get, e, "s.eType")
+					if ok3 and etype == ET_MISSILE then
+						missiles = missiles + 1
+						local ok4, wp = pcall(et.gentity_get, e, "s.weapon")
+						if ok4 and wp and KICKABLE_WEAPONS[wp] then
+							local ok5, pos = pcall(et.gentity_get, e, "origin")
+							if ok5 and pos then nades[#nades+1] = { e, pos } end
+						end
+					end
+				end
+			end
+			if DEBUG and (not last_kick_debug or levelTime - last_kick_debug >= 2000) then
+				last_kick_debug = levelTime
+				local pl = {}
+				kick_collect_players(pl)
+				log("debug kickables=" .. #nades .. " missiles=" .. missiles .. " top=" .. top_ent .. " players=" .. #pl)
+			end
+			if #nades > 0 then
+				local players = {}
+				kick_collect_players(players)
+				if #players > 0 then
+					for _, n in ipairs(nades) do
+						local p, pos = n[1], n[2]
+						if not last_kick[p] or levelTime - last_kick[p] >= KICK_COOLDOWN_MS then
+							for _, pl in ipairs(players) do
+								local dx = pos[1] - pl.origin[1]
+								local dy = pos[2] - pl.origin[2]
+								local dz = pos[3] - (pl.origin[3] + 8)
+								if dx*dx + dy*dy + dz*dz <= KICK_RANGE_SQ and pl.speed2 <= KICK_STATIONARY_SQ and kick_looking_at(pl, pos) then
+									do_kick(p, pos, pl, levelTime)
+									break
+								end
+							end
+						end
+					end
+				end
+			end
+		end)
+		if not ok then err_once("kick_frame", err) end
+	end
+
+	-- no-combat-selfkill stillness tracking
+	if NOKILL_ENABLE then
+		local ok, err = pcall(function()
+			for c = 0, get_client_slots() - 1 do
+				if has_client(c) and team_of(c) and is_alive(c) then
+					local o = client_get(c, "ps.origin")
+					if o then
+						local prev = last_origin[c]
+						if prev and prev[1] == o[1] and prev[2] == o[2] and prev[3] == o[3] then
+							if not still_since[c] then still_since[c] = levelTime end
+						else
+							still_since[c] = nil
+						end
+						last_origin[c] = { o[1], o[2], o[3] }
+					end
+				else
+					still_since[c] = nil
+					last_origin[c] = nil
+				end
+			end
+		end)
+		if not ok then err_once("nokill_frame", err) end
+	end
+
+	-- poison ticks
+	if POISON_ENABLE then
+		local ok, err = pcall(function()
+			for target, p in pairs(poisoned) do
+				if not has_client(target) or not is_alive(target) or team_of(target) == nil then
+					poisoned[target] = nil
+				elseif levelTime >= p.expires then
+					poisoned[target] = nil
+					if POISON_NOTIFY_VICTIM then cp(target, "^2the poison wears off") end
+				elseif levelTime >= p.next_tick then
+					p.next_tick = levelTime + POISON_TICK_MS
+					local attacker = p.attacker
+					if not has_client(attacker) then attacker = target end
+					pcall(et.G_Damage, target, attacker, attacker, POISON_TICK_DAMAGE, DAMAGE_NO_KNOCKBACK, MOD_SYRINGE)
+				end
+			end
+		end)
+		if not ok then err_once("poison_frame", err) end
+	end
+
+	-- throwable knife flight / pickup
+	if KNIFE_ENABLE then
+		local ok, err = pcall(function()
+			for ent, k in pairs(knives) do
+				local ok2, inuse = pcall(et.gentity_get, ent, "inuse")
+				if not ok2 or inuse ~= 1 then
+					knives[ent] = nil
+				elseif k.landed then
+					if levelTime - k.landed >= KNIFE_LIFETIME_MS then
+						knife_free(ent)
+					else
+						local ok3, pos = pcall(et.gentity_get, ent, "r.currentOrigin")
+						if not ok3 or not pos then ok3, pos = pcall(et.gentity_get, ent, "origin") end
+						if ok3 and pos then
+							for c = 0, get_client_slots() - 1 do
+								if has_client(c) and is_alive(c) and team_of(c) then
+									local o = client_get(c, "ps.origin")
+									if o and dist2(o, pos) <= KNIFE_PICKUP_RANGE*KNIFE_PICKUP_RANGE then
+										if knife_give_back(c, k.weapon) then knife_free(ent) break end
+									end
+								end
+							end
+						end
+					end
+				else
+					local ok3, pos = pcall(et.gentity_get, ent, "r.currentOrigin")
+					if not ok3 or not pos then ok3, pos = pcall(et.gentity_get, ent, "origin") end
+					if ok3 and pos then
+						local tr
+						if type(et.trap_Trace) == "function" then
+							local ok4, t = pcall(et.trap_Trace, k.last, nil, nil, pos, ent, MASK_SHOT)
+							if ok4 and type(t) == "table" then tr = t end
+						end
+						if tr then
+							local hitent = tr.entityNum
+							local frac   = tr.fraction or 1
+							if type(hitent) == "number" and hitent < get_client_slots() and has_client(hitent) and is_alive(hitent) and hitent ~= k.owner then
+								knife_hit_player(ent, k, hitent, tr.endpos or pos)
+								knife_free(ent)
+							elseif frac < 1 then
+								local endpos = tr.endpos or pos
+								pcall(et.gentity_set, ent, "s.pos", { trType = TR_STATIONARY, trTime = levelTime, trBase = endpos, trDelta = {0,0,0}, })
+								pcall(et.gentity_set, ent, "r.currentOrigin", endpos)
+								k.landed = levelTime
+							end
+						end
+						k.last = pos
+					end
+				end
+			end
+		end)
+		if not ok then err_once("knife_frame", err) end
+	end
 end
 
 -- player spawn (revived==0 means fresh spawn; also called after revive per
@@ -1031,6 +1067,7 @@ end
 -- reports, which is safer for weapon grants)
 local function on_player_spawn(clientId, revived)
 	-- reset per-life state
+	clear_no_client(clientId)
 	last_combat[clientId] = nil
 	still_since[clientId] = nil
 	last_origin[clientId]  = nil
@@ -1040,6 +1077,7 @@ local function on_player_spawn(clientId, revived)
 	-- NOTE: thrown knives that landed stay in the world across spawns;
 	-- only the thrower's own clip is reset below.
 
+	if not enabled then return end
 	if not is_on_team(clientId) then return end
 	local cls = class_of(clientId)
 
@@ -1069,6 +1107,14 @@ local function on_player_spawn(clientId, revived)
 	end
 end
 
+local function on_client_connect(clientId)
+	clear_no_client(clientId)
+end
+
+local function on_client_begin(clientId)
+	clear_no_client(clientId)
+end
+
 local function on_client_disconnect(clientId)
 	no_client[clientId]     = nil
 	last_combat[clientId]   = nil
@@ -1086,6 +1132,8 @@ end
 -- client command (weapon-slot toggles + /kill block)
 local function on_client_command(clientId, command)
 	if type(command) ~= "string" then return 0 end
+	clear_no_client(clientId)
+	if not enabled then return 0 end
 
 	-- --- slot 7 (landmine <-> adrenaline) ---
 	if ADRENALINE_ENABLE and is_slot7_command(command) then
@@ -1162,6 +1210,9 @@ end
 
 -- damage event (poison syringe hit + combat tracking)
 local function on_damage(target, attacker, damage, damageFlags, meansOfDeath)
+	if not enabled then return 0 end
+	if type(target) == "number" then clear_no_client(target) end
+	if type(attacker) == "number" then clear_no_client(attacker) end
 	-- no-combat-selfkill combat timer
 	if NOKILL_ENABLE then
 		local ok, err = pcall(function()
@@ -1188,6 +1239,8 @@ end
 
 -- weapon fire event (poison syringe trace + throwable knife + medic block)
 local function on_weapon_fire(clientId, weapon)
+	if not enabled then return 0 end
+	clear_no_client(clientId)
 	-- adrenaline: medics must not fire it (defense in depth)
 	if ADRENALINE_ENABLE and weapon == WP_MEDIC_ADRENALINE
 		and is_on_team(clientId) and class_of(clientId) == PC_MEDIC then
@@ -1246,9 +1299,16 @@ local function on_game_init(levelTime, randomSeed, isRestart)
 	poisoned = {}
 	knives = {}; next_throw = {}
 
+	enabled = is_gameplay_enabled()
+
+	if not enabled then
+		log("disabled via g_gameplay 0 - all gameplay tweaks off")
+		return
+	end
+
 	if KICK_ENABLE and KICK_SOUND and type(et.G_SoundIndex) == "function" then
-		local idx = et.G_SoundIndex(KICK_SOUND_FILE)
-		if idx and idx ~= 0 then kick_sound_index = idx end
+		local ok, idx = pcall(et.G_SoundIndex, KICK_SOUND_FILE)
+		if ok and idx and idx ~= 0 then kick_sound_index = idx end
 	end
 
 	log("loaded (client slots: " .. get_client_slots() .. ")")
@@ -1261,6 +1321,14 @@ local function on_game_init(levelTime, randomSeed, isRestart)
 	if SMG_SLOT2_ENABLE   then feats[#feats+1] = "smg-slot2" end
 	if KNIFE_ENABLE       then feats[#feats+1] = "throwable-knife" end
 	log("features: " .. table.concat(feats, ", "))
+	log("ready - set g_gameplay 0 to disable, 1 to enable")
+
+	if type(et.AddWeaponToPlayer) ~= "function" then
+		log("WARNING: et.AddWeaponToPlayer missing - some features will not work")
+	end
+	if type(et.G_Spawn) ~= "function" then
+		log("WARNING: et.G_Spawn missing - throwable knife disabled")
+	end
 end
 
 -- ========================== REGISTRATION =================================
@@ -1271,6 +1339,8 @@ end
 events.handle("onGameInit",        on_game_init)
 events.handle("onGameFrame",       on_game_frame)
 events.handle("onPlayerSpawn",     on_player_spawn)
+events.handle("onClientConnect",   on_client_connect)
+events.handle("onClientBegin",     on_client_begin)
 events.handle("onClientDisconnect",on_client_disconnect)
 events.handle("onClientCommand",   on_client_command)
 

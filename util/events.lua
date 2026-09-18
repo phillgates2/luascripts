@@ -135,4 +135,7 @@ events.add("onPlayerSpreeEnd")
 
 events.add("onServerCommand")
 
+events.add("onDamage")
+events.add("onWeaponFire")
+
 return events

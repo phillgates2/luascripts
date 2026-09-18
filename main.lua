@@ -106,7 +106,19 @@ function et_InitGame(levelTime, randomSeed, restartMap)
     end
 
     -- load modules
+    -- util first, so event bus exists before game modules register
     wolfa_requireModule("util.debug")
+
+    bits = wolfa_requireModule("util.bits")
+    constants = wolfa_requireModule("util.constants")
+    events = wolfa_requireModule("util.events")
+    files = wolfa_requireModule("util.files")
+    logs = wolfa_requireModule("util.logs")
+    pagination = wolfa_requireModule("util.pagination")
+    settings = wolfa_requireModule("util.settings")
+    tables = wolfa_requireModule("util.tables")
+    timers = wolfa_requireModule("util.timers")
+    util = wolfa_requireModule("util.util")
 
     admin = wolfa_requireModule("admin.admin")
     balancer = wolfa_requireModule("admin.balancer")
@@ -134,17 +146,6 @@ function et_InitGame(levelTime, randomSeed, restartMap)
     greetings = wolfa_requireModule("players.greetings")
     players = wolfa_requireModule("players.players")
     stats = wolfa_requireModule("players.stats")
-
-    bits = wolfa_requireModule("util.bits")
-    constants = wolfa_requireModule("util.constants")
-    events = wolfa_requireModule("util.events")
-    files = wolfa_requireModule("util.files")
-    logs = wolfa_requireModule("util.logs")
-    pagination = wolfa_requireModule("util.pagination")
-    settings = wolfa_requireModule("util.settings")
-    tables = wolfa_requireModule("util.tables")
-    timers = wolfa_requireModule("util.timers")
-    util = wolfa_requireModule("util.util")
 
     -- register the module
     et.RegisterModname("WolfAdmin "..wolfa_getVersion())
