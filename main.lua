@@ -33,6 +33,7 @@ local commands
 local bots
 local fireteams
 local game
+local gameplay
 local sprees
 local teams
 local voting
@@ -124,6 +125,7 @@ function et_InitGame(levelTime, randomSeed, restartMap)
 
     bots = wolfa_requireModule("game.bots")
     game = wolfa_requireModule("game.game")
+    gameplay = wolfa_requireModule("game.gameplay")
     fireteams = wolfa_requireModule("game.fireteams")
     sprees = wolfa_requireModule("game.sprees")
     teams = wolfa_requireModule("game.teams")
@@ -222,7 +224,17 @@ function et_Obituary(victimId, killerId, mod)
 end
 
 function et_ClientSpawn(clientId, revived)
-    if revived == 0 then
-        events.trigger("onPlayerSpawn", clientId)
-    end
+    -- Always fire the event (revived==0 fresh spawn, revived==1 after a
+    -- medic revive). Several gameplay tweaks (weapon grants, state resets)
+    -- need to run after revive as well as after a fresh spawn, and handlers
+    -- receive the `revived` flag so they can distinguish the two cases.
+    events.trigger("onPlayerSpawn", clientId, (revived == 1))
+end
+
+function et_Damage(targetId, attackerId, damage, damageFlags, meansOfDeath)
+    return events.trigger("onDamage", targetId, attackerId, damage, damageFlags, meansOfDeath)
+end
+
+function et_WeaponFire(clientId, weapon)
+    return events.trigger("onWeaponFire", clientId, weapon)
 end
