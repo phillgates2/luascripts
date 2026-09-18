@@ -89,6 +89,7 @@ local GRANT_SMG_CLIP        = 30
 
 -- --- throwable knife -----------------------------------------------------
 local KNIFE_ENABLE          = true
+local KNIFE_CLIP_MAX        = 5     -- knives per clip (spawn + pickup cap)
 local THROW_SPEED           = 1400
 local THROW_UP              = 40
 local THROW_DAMAGE          = 45
@@ -96,8 +97,6 @@ local THROW_DAMAGE_HEAD     = 100
 local THROW_COOLDOWN_MS     = 800
 local KNIFE_LIFETIME_MS     = 30000
 local KNIFE_PICKUP_RANGE    = 48
-local THROW_KEEP_KNIFE      = false
-local THROW_RETURN_AFTER_MS = 30000
 local KNIFE_HEAD_HEIGHT     = 46
 
 -- misc
@@ -204,7 +203,6 @@ local poisoned = {}            -- poison_needle [cnum] = { attacker, expires, ne
 
 local knives = {}              -- throwable_knife [ent] = { owner, weapon, last, landed }
 local next_throw = {}
-local owed_knife = {}
 
 -- ============================== helpers ==================================
 
@@ -741,6 +739,51 @@ end
 
 -- =========================== THROWABLE KNIFE =============================
 
+-- Read current throwable-knife clip for a player.
+-- We reuse the weapon's own ammo-clip slot (ps.ammoclip[weapon]) to track
+-- how many throws the player has left; the melee stab is never disabled,
+-- only the *throw* is gated on clip > 0.
+local function knife_clip(num, weapon)
+	local c = client_get(num, "ps.ammoclip", weapon)
+	return (type(c) == "number" and c >= 0) and c or KNIFE_CLIP_MAX
+end
+
+-- Grant the clip of throwing knives. Called on spawn / revive so the
+-- player starts each life with KNIFE_CLIP_MAX throws.
+local function knife_grant_clip(num)
+	if not KNIFE_ENABLE then return end
+	if not is_on_team(num) then return end
+	for w, _ in pairs(KNIVES) do
+		if has_weapon(num, w) then
+			-- ammo=0 reserve, clip=KNIFE_CLIP_MAX ready, setcurrent=0
+			pcall(et.AddWeaponToPlayer, num, w, 0, KNIFE_CLIP_MAX, 0)
+		end
+	end
+end
+
+local function knife_set_clip(num, weapon, new_clip)
+	if new_clip < 0 then new_clip = 0 end
+	if new_clip > KNIFE_CLIP_MAX then new_clip = KNIFE_CLIP_MAX end
+	local cur_ammo = client_get(num, "ps.ammo", weapon) or 0
+	pcall(et.AddWeaponToPlayer, num, weapon, cur_ammo, new_clip, 0)
+end
+
+-- Consume one throw (decrement clip).
+local function knife_consume(num, weapon)
+	local cur = knife_clip(num, weapon)
+	knife_set_clip(num, weapon, cur - 1)
+end
+
+-- Add one throw to the clip (pickup); returns true if added, false if
+-- the clip was already full (so the pickup doesn't "eat" a knife that
+-- has nowhere to go).
+local function knife_add(num, weapon)
+	local cur = knife_clip(num, weapon)
+	if cur >= KNIFE_CLIP_MAX then return false end
+	knife_set_clip(num, weapon, cur + 1)
+	return true
+end
+
 local function knife_spawn(num, weapon, levelTime)
 	if type(et.G_Spawn) ~= "function" then return nil end
 	local o = client_get(num, "ps.origin")
@@ -767,8 +810,9 @@ local function knife_spawn(num, weapon, levelTime)
 end
 
 local function knife_give_back(num, weapon)
-	pcall(et.AddWeaponToPlayer, num, weapon, 0, 1, 0)
-	owed_knife[num] = nil
+	-- A pickup adds one to the clip, capped at KNIFE_CLIP_MAX. If the
+	-- player is already full, return false so the knife stays in the world.
+	return knife_add(num, weapon)
 end
 
 local function knife_free(ent)
@@ -936,9 +980,10 @@ local function on_game_frame(levelTime)
 							if has_client(c) and is_alive(c) and team_of(c) then
 								local o = client_get(c, "ps.origin")
 								if o and dist2(o, pos) <= KNIFE_PICKUP_RANGE*KNIFE_PICKUP_RANGE then
-									knife_give_back(c, k.weapon)
-									knife_free(ent)
-									break
+									if knife_give_back(c, k.weapon) then
+										knife_free(ent)
+										break
+									end
 								end
 							end
 						end
@@ -975,13 +1020,6 @@ local function on_game_frame(levelTime)
 				end
 			end
 		end
-		for c, o in pairs(owed_knife) do
-			if not has_client(c) then
-				owed_knife[c] = nil
-			elseif levelTime >= o.at then
-				knife_give_back(c, o.weapon)
-			end
-		end
 	end
 
 	end)
@@ -998,8 +1036,9 @@ local function on_player_spawn(clientId, revived)
 	last_origin[clientId]  = nil
 	last_weapon[clientId]  = nil
 	poison_cure(clientId, "spawn")
-	owed_knife[clientId]   = nil
 	next_throw[clientId]   = nil
+	-- NOTE: thrown knives that landed stay in the world across spawns;
+	-- only the thrower's own clip is reset below.
 
 	if not is_on_team(clientId) then return end
 	local cls = class_of(clientId)
@@ -1018,6 +1057,10 @@ local function on_player_spawn(clientId, revived)
 		syringe_grant(clientId)
 	end
 
+	if KNIFE_ENABLE then
+		knife_grant_clip(clientId)
+	end
+
 	if SMG_SLOT2_ENABLE and GRANT_TEAM_SMG and cls == PC_SOLDIER then
 		if not smg_of(clientId) then
 			local s = TEAM_SMG[team_of(clientId)]
@@ -1032,12 +1075,12 @@ local function on_client_disconnect(clientId)
 	still_since[clientId]   = nil
 	last_origin[clientId]   = nil
 	last_weapon[clientId]   = nil
-	owed_knife[clientId]    = nil
 	next_throw[clientId]    = nil
 	poison_cure(clientId, "disconnect")
 	for target, p in pairs(poisoned) do
 		if p.attacker == clientId then p.attacker = target end
 	end
+	-- Knives thrown by a disconnected player remain pickup-able in the world.
 end
 
 -- client command (weapon-slot toggles + /kill block)
@@ -1175,13 +1218,15 @@ local function on_weapon_fire(clientId, weapon)
 			if not (team_of(clientId) and is_alive(clientId)) then return 0 end
 			local now = now_ms()
 			if next_throw[clientId] and now < next_throw[clientId] then return 0 end
+
+			-- Require at least one throw in the clip; if empty, let the
+			-- engine do the normal melee stab (return 0).
+			if knife_clip(clientId, weapon) <= 0 then return 0 end
+
 			if not knife_spawn(clientId, weapon, now) then return 0 end
 			next_throw[clientId] = now + THROW_COOLDOWN_MS
-			if not THROW_KEEP_KNIFE then
-				pcall(et.RemoveWeaponFromPlayer, clientId, weapon)
-				owed_knife[clientId] = { weapon = weapon, at = now + THROW_RETURN_AFTER_MS }
-			end
-			return 1
+			knife_consume(clientId, weapon)
+			return 1   -- swallow the melee stab; the thrown knife is the attack
 		end)
 		if ok then intercepted = res else err_once("knife_fire", res) end
 		return intercepted
@@ -1199,7 +1244,7 @@ local function on_game_init(levelTime, randomSeed, isRestart)
 	last_weapon = {}
 	last_combat = {}; still_since = {}; last_origin = {}
 	poisoned = {}
-	knives = {}; owed_knife = {}; next_throw = {}
+	knives = {}; next_throw = {}
 
 	if KICK_ENABLE and KICK_SOUND and type(et.G_SoundIndex) == "function" then
 		local idx = et.G_SoundIndex(KICK_SOUND_FILE)
