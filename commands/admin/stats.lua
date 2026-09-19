@@ -77,7 +77,7 @@ function commandShowStats(clientId, command, victim)
     else
         stats["teamdamage"] = et.gentity_get(cmdClient, "sess.team_damage")
         stats["totaldamage"] = et.gentity_get(cmdClient, "sess.damage_given") + et.gentity_get(cmdClient, "sess.team_damage")
-        stats["suicides"] = et.gentity_get(cmdClient, "sess.suicides")
+        stats["suicides"] = et.gentity_get(cmdClient, "sess.self_kills")
     end
 
     if stats["totalkills"] == 0 then stats["totalkills"] = 1 end

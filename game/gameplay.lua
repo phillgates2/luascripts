@@ -171,6 +171,15 @@ local PISTOL_POOL = {
 	[WP_AKIMBO_LUGER] = WP_LUGER, [WP_AKIMBO_SILENCEDLUGER] = WP_LUGER,
 	[WP_SILENCER] = WP_LUGER,
 }
+-- ps.ammo / ps.ammoclip are indexed with the weapon table's ammoIndex /
+-- clipIndex (bg_misc.c), which is not always the weapon number: the side
+-- arms share the pool of their base weapon and the adrenaline shot shares
+-- the medic syringe's.
+local AMMO_POOL = {
+	[WP_MEDIC_ADRENALINE] = WP_MEDIC_SYRINGE,
+}
+for w, pool in pairs(PISTOL_POOL) do AMMO_POOL[w] = pool end
+
 local KNIVES = { [WP_KNIFE] = true, [WP_KNIFE_KABAR] = true }
 local KICKABLE_WEAPONS = {
 	[WP_GRENADE_LAUNCHER] = true,
@@ -185,7 +194,7 @@ MODULE_TAG = "[wolfadmin:gameplay]"
 
 -- ============================== state ====================================
 local client_slots
-local no_client = {}
+local no_client = {}          -- [num] = true: slot has no client data right now
 local reported_errors = {}
 
 -- per-feature state
@@ -241,15 +250,81 @@ local function get_client_slots()
 	return client_slots or refresh_client_slots()
 end
 
+-- Every client field this module reads. et.gentity_get() resolves client
+-- fields through the engine's own field table (g_lua.c, _et_gclient_addfield)
+-- and only while the slot owns a gclient_t, so "the engine does not have this
+-- field" and "this slot has no client" raise the very same error
+-- (tried to get invalid gentity field "<name>"). Probing the list once per
+-- map on slot 0 - which always owns a gclient_t, g_main.c assigns
+-- g_entities[i].client for i < level.maxclients - tells the two apart: a field
+-- the engine does not have is dropped for the whole map and can never make a
+-- real player look like an empty slot.
+--
+-- This is not hypothetical: ET:Legacy's field table has no ps.weapons (only
+-- ps.weapon/ps.weaponstate), so the old code reported one player after another
+-- and then threw that player's client data away, which silently disabled every
+-- feature of this module for them.
+--
+-- The bookkeeping sits in one table (rather than one local per piece) because
+-- Lua allows 200 locals per function and this module is close to that limit.
+local fields = {
+	names = {
+		"pers.connected", "pers.netname",
+		"sess.sessionTeam", "sess.playerType",
+		"sess.playerWeapon", "sess.playerWeapon2",
+		"sess.latchPlayerWeapon", "sess.latchPlayerWeapon2",
+		"ps.stats", "ps.origin", "ps.viewangles", "ps.viewheight", "ps.weapon",
+		"ps.weapons", "ps.ammo", "ps.ammoclip", "ps.powerups",
+	},
+	-- the class load-out; a soldier's SMG sits in playerWeapon2 when the light
+	-- weapons skill is bought (classSecondaryWeapons in bg_classes.c)
+	loadout = {
+		"sess.playerWeapon", "sess.playerWeapon2",
+		"sess.latchPlayerWeapon", "sess.latchPlayerWeapon2",
+	},
+	ok = {},   -- [name] = true when this engine exposes the field
+}
+
+function fields.probe()
+	local missing = {}
+	fields.ok = {}
+	for _, name in ipairs(fields.names) do
+		local ok = type(et.gentity_get) == "function"
+			and pcall(et.gentity_get, 0, name, 0)
+		fields.ok[name] = ok and true or false
+		if not ok then missing[#missing + 1] = name end
+	end
+	if #missing > 0 then
+		log("client fields not exposed by this engine: " .. table.concat(missing, ", "))
+	end
+	if fields.ok["ps.weapons"] == false then
+		log("ps.weapons is not exposed by this engine - weapon ownership is read"
+			.. " from the load-out and the ammo pools instead")
+	end
+end
+
+-- A slot without client data is skipped until an event clears it again
+-- (client connect/begin/spawn/disconnect, a client command or damage). The
+-- report is per slot and map, never per frame.
+function fields.mark_empty(num, err)
+	if no_client[num] then return end
+	no_client[num] = true
+	local key = "no_client:" .. num
+	if not reported_errors[key] then
+		reported_errors[key] = true
+		log("client slot " .. num .. " has no client data ("
+			.. tostring(err) .. ") - skipped while it is empty")
+	end
+end
+
 -- protected client-field read that never aborts the callback
 local function client_get(num, field, index)
 	if no_client[num] then return nil end
 	if num < 0 or num >= get_client_slots() then return nil end
+	if fields.ok[field] == false then return nil end
 	local ok, val = pcall(et.gentity_get, num, field, index)
 	if not ok then
-		no_client[num] = true
-		log("warning: client slot " .. num .. " has no client fields ("
-			.. tostring(val) .. ") - skipping it for this map")
+		fields.mark_empty(num, val)
 		return nil
 	end
 	return val
@@ -262,7 +337,7 @@ local function has_client(num)
 	end
 	local ok, v = pcall(et.gentity_get, num, "inuse")
 	if not ok then
-		if tostring(v):find("invalid") then no_client[num] = true end
+		if tostring(v):find("invalid", 1, true) then fields.mark_empty(num, v) end
 		return false
 	end
 	return v == 1
@@ -290,11 +365,37 @@ local function class_of(num)
 	return client_get(num, "sess.playerType")
 end
 
--- ps.weapons is two 32-bit words; weapon w is bit (w%32) of word floor(w/32)
+-- ps.weapons is two 32-bit words; weapon w is bit (w%32) of word floor(w/32).
+-- When the engine exposes that bitmask we use it and nothing else. ET:Legacy's
+-- field table does not (see the probe above), so the fallback below stands in
+-- for it:
+--   * ps.weapon                          - the weapon in hand right now
+--   * the class load-out fields          - what the player selected in the
+--     limbo menu; SetWolfSpawnWeapons() grants exactly that load-out
+--   * a non-empty ammo pool              - SetWolfSpawnWeapons() adds every
+--     owned weapon through AddWeaponToPlayer(), which fills
+--     ps.ammo[ammoIndex] / ps.ammoclip[clipIndex] (g_client.c), and
+--     bg_classes.c even gives the weapons without ammo of their own (knife,
+--     pliers, mines, smoke) a starting clip of 1
+-- A weapon that is owned but completely out of ammo *and* not part of the
+-- load-out is the only false negative - and that weapon could not be used by
+-- the toggles below anyway.
 local function has_weapon(num, w)
 	local mask = client_get(num, "ps.weapons", math.floor(w / 32))
-	if type(mask) ~= "number" then return false end
-	return math.floor(mask / (2 ^ (w % 32))) % 2 == 1
+	if type(mask) == "number" then
+		return math.floor(mask / (2 ^ (w % 32))) % 2 == 1
+	end
+
+	if client_get(num, "ps.weapon") == w then return true end
+	for _, field in ipairs(fields.loadout) do
+		if client_get(num, field) == w then return true end
+	end
+
+	local pool = AMMO_POOL[w] or w
+	local clip = client_get(num, "ps.ammoclip", pool)
+	if type(clip) == "number" and clip > 0 then return true end
+	local ammo = client_get(num, "ps.ammo", pool)
+	return type(ammo) == "number" and ammo > 0
 end
 
 -- view forward vector from {pitch, yaw, roll} (q_math.c angles_vectors)
@@ -378,7 +479,7 @@ end
 
 -- slot 7 helpers
 local function bank7_has_ammo(num, w)
-	local pool = (w == WP_MEDIC_ADRENALINE) and WP_MEDIC_SYRINGE or w
+	local pool = AMMO_POOL[w] or w
 	local clip = client_get(num, "ps.ammoclip", pool)
 	local ammo = client_get(num, "ps.ammo", pool)
 	if clip == nil and ammo == nil then return true end
@@ -404,7 +505,7 @@ local function pick_bank7(num)
 end
 
 local function bank7_select(num, w)
-	local pool = (w == WP_MEDIC_ADRENALINE) and WP_MEDIC_SYRINGE or w
+	local pool = AMMO_POOL[w] or w
 	local ammo = client_get(num, "ps.ammo", pool) or 0
 	local clip = client_get(num, "ps.ammoclip", pool) or 0
 	local ok, err = pcall(et.AddWeaponToPlayer, num, w, ammo, clip, 1)
@@ -612,7 +713,11 @@ end
 local function syringe_grant(num)
 	if not POISON_ALL_CLASSES then return end
 	if not is_on_team(num) then return end
-	if has_weapon(num, WP_MEDIC_SYRINGE) then return end
+	-- Medics carry the needle as a class weapon (bg_classes.c); nobody else
+	-- does. "The pool is not empty" is not proof of a needle here because the
+	-- adrenaline shot shares that pool (see AMMO_POOL) - and
+	-- adrenaline_grant() runs before this on every spawn.
+	if class_of(num) == PC_MEDIC then return end
 	local ammo, clip = SYRINGE_AMMO, SYRINGE_AMMOCLIP
 	if has_weapon(num, WP_MEDIC_ADRENALINE) then
 		ammo = client_get(num, "ps.ammo", WP_MEDIC_SYRINGE) or 0
@@ -658,7 +763,7 @@ local function bank5_weapon_name(w)
 end
 
 local function bank5_select(num, w)
-	local pool = (w == WP_MEDIC_ADRENALINE) and WP_MEDIC_SYRINGE or w
+	local pool = AMMO_POOL[w] or w
 	local ammo = client_get(num, "ps.ammo", pool) or 0
 	local clip = client_get(num, "ps.ammoclip", pool) or 0
 	local ok, err = pcall(et.AddWeaponToPlayer, num, w, ammo, clip, 1)
@@ -728,8 +833,15 @@ end
 -- ========================== SOLDIER SMG SLOT 2 ===========================
 
 local function smg_of(num)
-	local chosen = client_get(num, "sess.playerWeapon")
-	if chosen and SMG_WEAPONS[chosen] and has_weapon(num, chosen) then return chosen end
+	-- The SMG is the primary for most soldiers, but with the light weapons
+	-- skill it sits in the secondary slot instead (classSecondaryWeapons in
+	-- bg_classes.c) - hence the whole load-out, not just sess.playerWeapon.
+	-- SetWolfSpawnWeapons() grants whatever the load-out says, so a load-out
+	-- weapon does not need the ownership check.
+	for _, field in ipairs(fields.loadout) do
+		local chosen = client_get(num, field)
+		if type(chosen) == "number" and SMG_WEAPONS[chosen] then return chosen end
+	end
 	for w in pairs(SMG_WEAPONS) do
 		if has_weapon(num, w) then return w end
 	end
@@ -744,7 +856,7 @@ local function pistol_of(num)
 end
 
 local function smg_has_ammo(num, w)
-	local pool = PISTOL_POOL[w] or w
+	local pool = AMMO_POOL[w] or w
 	local clip = client_get(num, "ps.ammoclip", pool)
 	local ammo = client_get(num, "ps.ammo", pool)
 	if clip == nil and ammo == nil then return true end
@@ -752,8 +864,20 @@ local function smg_has_ammo(num, w)
 end
 
 local function smg_select(num, w)
-	pcall(et.gentity_set, num, "ps.weapon", w)
-	pcall(et.gentity_set, num, "ps.weaponstate", 0)
+	-- ps.weapon and ps.weaponstate are FIELD_FLAG_READONLY in g_lua.c, so
+	-- et.gentity_set() refuses them ("tried to set read-only gentity field").
+	-- et.AddWeaponToPlayer() is the engine's own helper for this: it writes the
+	-- weapon's pools - assignment, not addition, so feed it what the player
+	-- already has - and with setcurrent 1 it puts the weapon in hand.
+	-- ps.weaponstate needs no write; the engine raises the weapon itself.
+	local pool = AMMO_POOL[w] or w
+	local ammo = client_get(num, "ps.ammo", pool) or 0
+	local clip = client_get(num, "ps.ammoclip", pool) or 0
+	local ok, err = pcall(et.AddWeaponToPlayer, num, w, ammo, clip, 1)
+	if not ok then
+		err_once("smg_select", err)
+		return false
+	end
 	return true
 end
 
@@ -1292,6 +1416,7 @@ local function on_game_init(levelTime, randomSeed, isRestart)
 	no_client = {}
 	reported_errors = {}
 	refresh_client_slots()
+	fields.probe()
 
 	last_kick = {}; kick_sound_index = 0; last_kick_debug = 0
 	last_weapon = {}
