@@ -138,8 +138,8 @@ New in `tests/`:
 - `tests/gameplay_spec.lua` - 38 checks in three groups:
   - ET:Legacy field table (no `ps.weapons`): the reported symptom itself - four
     clients spawn in one frame, no slot is reported empty, no field errors, and
-    the throwable knife, poison needle, togglemine, poisonneedle and
-    weaponbank-2 features all keep working for them, including a reconnect.
+    the throwable knife, poison needle, togglemine and poisonneedle features
+    all keep working for them, including a reconnect.
   - Engine with `ps.weapons` bitmask: the bitmask path still wins over the
     fallback (removing the landmine while leaving its ammo pool filled).
   - Slots without client data: reported exactly once per map, never per frame,
@@ -178,3 +178,104 @@ pre-fix code).
 Giving it a visible model would mean a field the engine does allow Lua to write
 (`s.modelindex` with `s.eType = ET_GENERAL`) or a new engine helper. Both change
 rendering behaviour and need a live test, so they were left out of this fix.
+
+## 7. Follow-up: "the engineer's poison needle and pliers don't change on slot 5"
+
+Reported separately. Verified against the ET:Legacy sources; there are three
+distinct issues, only one of which is a bug in the module.
+
+### 7.1 `weaponbank 5` never reaches the server
+
+`weaponbank` is in the cgame `consoleCommand_t commands[]` table
+(`src/cgame/cg_consolecmds.c`), alongside `weapon`, `weapnext`, `weapprev`,
+`weapalt` and friends. `CG_ConsoleCommand()` walks that table and returns
+`qtrue` on a match, so the command is consumed **client-side** and is never
+forwarded to qagame. `et_ClientCommand()` therefore never sees it.
+
+So the `weaponbank`/`weaponslot` branches in `is_slot5_command()` (and the
+slot-2/slot-7 twins) could only ever fire for a hand-typed `\weaponbank 5` -
+and cgame eats even that. The earlier note in section 5 claiming a working
+"weaponbank-2 feature" was wrong; that line has been corrected. The dead
+matching has been removed from `is_slot5_command()` and replaced with a comment
+recording why.
+
+The real slot-5 keypress is handled entirely inside `CG_WeaponBank_f()`, which
+cycles the bank locally and sets `cg.weaponSelect`. Nothing is sent to the
+server.
+
+### 7.2 A server-forced weapon switch does not survive one movement frame
+
+`ps.weapon` is `FIELD_FLAG_READONLY` to Lua, so the only way to force a switch
+is `et.AddWeaponToPlayer(..., setcurrent = 1)`. That write does not hold.
+`PM_Weapon()` in `src/game/bg_pmove.c` runs, every frame:
+
+```c
+if ((pm->ps->weaponTime <= 0 || (!weaponstateFiring && pm->ps->weaponDelay <= 0)) && !delayedFire)
+{
+    pm->ps->viewlocked = VIEWLOCK_NONE;
+    if (pm->ps->weapon != pm->cmd.weapon)
+    {
+        PM_BeginWeaponChange(pm->ps->weapon, pm->cmd.weapon, qfalse);
+    }
+}
+```
+
+`cmd.weapon` is the client's own selection. The Q3/ET protocol has no
+"stufftext" and no cgame server-command that sets it, so a server cannot move
+`cg.weaponSelect`; the forced switch is reverted as soon as the next usercmd
+arrives. `tests/slot5_engine_spec.lua` models this and asserts the revert.
+
+This is why a Lua-side toggle can look correct in a server-side test (the value
+of `ps.weapon` really does change) and still do nothing visible in game.
+
+### 7.3 The actual bug: a needle the client refuses to select
+
+`CG_WeaponSelectable()` rejects a weapon unless the bit is set in `ps.weapons`
+**and** `CG_WeaponHasAmmo()` passes:
+
+```c
+if ((GetWeaponTableData(weapon)->type & WEAPON_TYPE_MELEE) || weapon == WP_PLIERS)
+    return qtrue;
+if (!ps->ammo[GetWeaponTableData(weapon)->ammoIndex] &&
+    !ps->ammoclip[GetWeaponTableData(weapon)->clipIndex])
+    return qfalse;
+```
+
+`WP_PLIERS` is exempt. `WP_MEDIC_SYRINGE` is **not** - it is
+`WEAPON_TYPE_SYRINGUE`, not `WEAPON_TYPE_MELEE`. So a needle granted with both
+pools at zero is owned but unselectable, and the slot-5 key cycles straight
+past it: the engineer presses 5 and only ever gets the pliers. That is exactly
+the reported symptom.
+
+`syringe_grant()` now guarantees at least one charge before granting, so the
+needle is always reachable regardless of how `SYRINGE_AMMO` /
+`SYRINGE_AMMOCLIP` are configured. `bank5_has_ammo()` was also rewritten to
+mirror `CG_WeaponHasAmmo()` exactly (pliers exempt, pool looked up through
+`AMMO_POOL`) instead of special-casing the syringe and adrenaline.
+
+Note that the bank-5 items other than the medic's own syringe ship with
+`startingAmmo 0, startingClip 1` (`bg_classes.c`), so any "does the player have
+this?" test based on `ps.ammo[pool] > 0` alone reports them missing - the
+signal is in `ps.ammoclip`.
+
+### 7.4 A bug in the test harness that was hiding all of this
+
+`tests/et_stub.lua` implemented `COM_BitSet` with `+` instead of `|=`. Granting
+a weapon the player already owned carried into the neighbouring bit and
+silently rewrote the load-out: an axis engineer who should own
+`1 2 3 4 16 21 26` came out of the spawn hook owning `5 11 16 21 26 44` - no
+MP40, no knife, no pistol, plus a phantom weapon 5. Since every spawn re-grants
+weapons the player already has, this corrupted essentially every load-out in
+the suite while still reporting 38/38 green.
+
+Fixed to be idempotent, like the engine macro. `tests/slot5_engine_spec.lua`
+covers it directly.
+
+### 7.5 Tests
+
+`tests/slot5_engine_spec.lua` - 20 checks. It models the two engine pieces that
+decide the outcome (`PM_Weapon()`'s reconciliation and `CG_WeaponBank_f()`'s
+bank cycling via `CG_WeaponSelectable()`), then asserts that a stock slot-5
+keypress cycles needle -> pliers -> needle for an engineer. Verified to fail on
+the pre-fix code: 3/20 fail with the old `bit_set`, and 6/20 fail if the
+zero-pool guard in `syringe_grant()` is removed.
