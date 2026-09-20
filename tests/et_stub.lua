@@ -169,9 +169,18 @@ local CLASSES = {
 
 -- ps.weapons is int weapons[(WP_NUM_WEAPONS + 31) / 32]: COM_BitSet/COM_BitCheck
 -- and the Lua array fields are all 0-based, so word 0 holds weapons 0..31.
+-- COM_BitSet() is "|=", which is idempotent: setting a bit that is already set
+-- is a no-op. Using "+" here instead would carry into the neighbouring bit and
+-- silently rewrite the whole load-out whenever a weapon the player already owns
+-- is granted again (which AddWeaponToPlayer does on every spawn, e.g. to top up
+-- the knife clip).
 local function bit_set(mask, w)
 	local word = math.floor(w / 32)
-	mask[word] = (mask[word] or 0) + 2 ^ (w % 32)
+	local v    = mask[word] or 0
+	local bit  = 2 ^ (w % 32)
+	if math.floor(v / bit) % 2 == 0 then
+		mask[word] = v + bit
+	end
 end
 
 local function bit_clear(mask, w)

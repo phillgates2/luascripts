@@ -723,15 +723,35 @@ local function syringe_grant(num)
 		ammo = client_get(num, "ps.ammo", WP_MEDIC_SYRINGE) or 0
 		clip = (client_get(num, "ps.ammoclip", WP_MEDIC_SYRINGE) or 0) + SYRINGE_AMMOCLIP
 	end
+	-- CG_WeaponHasAmmo() does not exempt the syringe, so a needle granted with
+	-- an empty pool is owned but unselectable: the client's slot-5 key skips
+	-- straight past it and the player never sees the needle. Guarantee at
+	-- least one charge so the weapon is reachable.
+	if (ammo or 0) <= 0 and (clip or 0) <= 0 then clip = 1 end
 	if type(et.AddWeaponToPlayer) == "function" then
 		et.AddWeaponToPlayer(num, WP_MEDIC_SYRINGE, ammo, clip, 0)
 	end
 end
 
+-- Mirror of CG_WeaponHasAmmo() (cg_weapons.c), which is what actually decides
+-- whether the client's slot-5 key will stop on a weapon:
+--
+--     if ((GetWeaponTableData(weapon)->type & WEAPON_TYPE_MELEE) || weapon == WP_PLIERS)
+--         return qtrue;
+--     if (!ps->ammo[ammoIndex] && !ps->ammoclip[clipIndex])
+--         return qfalse;
+--
+-- The pliers are exempt; the syringe is NOT (it is WEAPON_TYPE_SYRINGUE, not
+-- MELEE), so a needle handed out with an empty pool is silently skipped by
+-- every bank-5 cycle - the player presses 5 and only ever sees the pliers.
+local BANK5_NO_AMMO_CHECK = { [WP_PLIERS] = true }
+
 local function bank5_has_ammo(num, w)
-	if w ~= WP_MEDIC_SYRINGE and w ~= WP_MEDIC_ADRENALINE then return true end
-	local clip = client_get(num, "ps.ammoclip", WP_MEDIC_SYRINGE)
-	local ammo = client_get(num, "ps.ammo", WP_MEDIC_SYRINGE)
+	if BANK5_NO_AMMO_CHECK[w] then return true end
+	local pool = AMMO_POOL[w] or w
+	local clip = client_get(num, "ps.ammoclip", pool)
+	local ammo = client_get(num, "ps.ammo", pool)
+	-- engine that exposes neither pool: assume usable rather than hide it
 	if clip == nil and ammo == nil then return true end
 	return (clip or 0) > 0 or (ammo or 0) > 0
 end
@@ -762,6 +782,25 @@ local function bank5_weapon_name(w)
 	return "weapon " .. w
 end
 
+-- NOTE ON FORCED SWITCHES
+--
+-- Setting ps.weapon server-side (which is what AddWeaponToPlayer's setcurrent
+-- flag does - ps.weapon itself is READONLY to Lua) only holds until the next
+-- movement frame. PM_Weapon() in bg_pmove.c runs:
+--
+--     if (pm->ps->weapon != pm->cmd.weapon)
+--         PM_BeginWeaponChange(pm->ps->weapon, pm->cmd.weapon, qfalse);
+--
+-- cmd.weapon is the *client's* own selection (cg.weaponSelect), and the Q3/ET
+-- protocol gives a server no way to write it - there is no "stufftext" and no
+-- cgame server-command that sets the selection. So a forced switch is undone
+-- as soon as the player's next usercmd arrives.
+--
+-- The switch that does stick is the one the client makes itself: the slot-5
+-- key is the cgame command "weaponbank 5" (CG_WeaponBank_f), which cycles the
+-- bank locally. All this module has to do for that to work is make sure the
+-- needle is owned AND passes CG_WeaponSelectable() - see syringe_grant() and
+-- bank5_has_ammo() above. That is the real mechanism behind slot 5.
 local function bank5_select(num, w)
 	local pool = AMMO_POOL[w] or w
 	local ammo = client_get(num, "ps.ammo", pool) or 0
@@ -775,20 +814,21 @@ local function bank5_select(num, w)
 	return false
 end
 
+-- Only custom verbs are matched here.
+--
+-- "weaponbank"/"weapon"/"weapnext"/... are all in the cgame consoleCommand_t
+-- commands[] table (cg_consolecmds.c). CG_ConsoleCommand() returns qtrue for
+-- them, which means the client consumes them locally and never forwards them
+-- to the server - so et_ClientCommand() is never called with "weaponbank 5"
+-- from a real player, and matching it here can only ever fire for a hand-typed
+-- "\weaponbank 5" (which cgame would have eaten first anyway).
+--
+-- The genuine slot-5 keypress is handled entirely client-side; this hook only
+-- exists for players who bind the custom verb instead.
 local function is_slot5_command(command)
 	if type(command) ~= "string" then return false end
 	local c = command:lower()
-	if c == SLOT5_TOGGLE_COMMAND or c == "slot5" or c == "poisonneedle" then return true end
-	if c == "weaponbank" or c == "weaponslot" or c:find("weaponbank") or c:find("weaponslot") then
-		if type(et.trap_Argv) == "function" then
-			local a1 = et.trap_Argv(1) or ""
-			if tonumber(a1) == 5 then return true end
-		end
-		if c:match("weaponbank%s+5") or c:match("weaponslot%s+5") or c == "weaponbank 5" or c == "weaponslot 5" then
-			return true
-		end
-	end
-	return false
+	return c == SLOT5_TOGGLE_COMMAND or c == "slot5" or c == "poisonneedle"
 end
 
 local function poison_cure(num, _reason)
