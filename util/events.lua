@@ -85,6 +85,23 @@ function events.unhandle(name, func)
     end
 end
 
+-- A handler answers an interception event with either "not mine" (nil, false
+-- or 0) or "this is mine" (1, or - for onClientConnectAttempt - the rejection
+-- string). The engine only ever looks at the single value that main.lua's
+-- et_ClientCommand() / et_WeaponFire() / et_ClientConnect() return, so the
+-- first *blocking* answer has to win: an earlier handler saying 0 must not
+-- swallow a later handler's 1.
+--
+-- That is what the old "first non-nil answer wins" rule got wrong, and it is
+-- why game/gameplay.lua could never intercept anything: main.lua loads
+-- commands.commands before game.gameplay, so commands.onClientCommand() is
+-- handler #1 and always ends with `return 0` - the gameplay module's
+-- `return 1` for /kill in a fire fight was discarded and et_ClientCommand()
+-- handed 0 back to the engine, which then ran Cmd_Kill_f() as usual.
+local function isBlocking(value)
+    return value ~= nil and value ~= false and value ~= 0
+end
+
 function events.trigger(name, ...)
     local handlers = events.get(name)
 
@@ -94,11 +111,15 @@ function events.trigger(name, ...)
 
     local returnValue
 
-    for _, handler in pairs(handlers) do
+    -- handlers are stored with table.insert, so ipairs() walks them in
+    -- registration order; pairs() left that order to the implementation
+    for _, handler in ipairs(handlers) do
         local handlerReturn = handler(...)
 
-        if not returnValue and returnValue ~= 0 and handlerReturn ~= nil then
-            returnValue = handlerReturn
+        if handlerReturn ~= nil then
+            if returnValue == nil or (isBlocking(handlerReturn) and not isBlocking(returnValue)) then
+                returnValue = handlerReturn
+            end
         end
     end
 

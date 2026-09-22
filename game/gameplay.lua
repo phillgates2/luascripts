@@ -97,7 +97,18 @@ local THROW_DAMAGE_HEAD     = 100
 local THROW_COOLDOWN_MS     = 800
 local KNIFE_LIFETIME_MS     = 30000
 local KNIFE_PICKUP_RANGE    = 48
-local KNIFE_HEAD_HEIGHT     = 46
+-- A hit this far above the victim's origin counts as a headshot. It matches the
+-- engine's own head box: G_BuildHead() (g_combat.c) puts it at origin +
+-- ps.viewheight with mins z -2, so the box starts at viewheight - 2 = 38 for a
+-- standing player (DEFAULT_VIEWHEIGHT 40, bg_public.h). 46 left only the top
+-- two units of the 72-unit player box as a head, so headshots were effectively
+-- unreachable. When ps.viewheight can be read the victim's real value is used
+-- instead, which keeps it right for a crouching player (CROUCH_VIEWHEIGHT 16).
+local KNIFE_HEAD_HEIGHT     = 38
+local KNIFE_MODEL           = true  -- draw it with the knife's own world model
+local KNIFE_SPIN            = 720   -- degrees/second of tumble (0 = no spin)
+local KNIFE_MAX_LIVE        = 12    -- cap on knives in the world (entity slots)
+local KNIFE_SPAWN_CLASS     = "target_position"
 
 -- misc
 DEBUG                 = false
@@ -148,7 +159,11 @@ local MOD_KNIFE       = (et and et.MOD_KNIFE)       or 5
 local PW_OPS_DISGUISED= (et and et.PW_OPS_DISGUISED)or 7
 local DAMAGE_NO_KNOCKBACK = 8
 
-local ET_MISSILE = 3
+-- entityType_t / trType_t (q_shared.h). Neither enum is exposed to Lua, so the
+-- values are kept here; they have not moved since ET 1.0. The rest of them
+-- (ET_GENERAL, TR_LINEAR) are only used by the throwable knife and hang off its
+-- table, because this chunk is at Lua's 200-local limit.
+local ET_MISSILE    = 3
 local TR_STATIONARY = 0
 local TR_GRAVITY    = 6
 
@@ -210,10 +225,26 @@ local last_origin  = {}
 
 local poisoned = {}            -- poison_needle [cnum] = { attacker, expires, next_tick }
 
-local knives = {}              -- throwable_knife [ent] = { owner, weapon, last, landed }
+local knives = {}              -- throwable_knife [ent] = flight/pickup record
 local next_throw = {}
 
 local enabled = true
+
+-- ============================== the clock ================================
+-- Every timestamp this module writes or compares comes from ONE clock:
+-- level.time, which et_RunFrame() hands to onGameFrame(). The callbacks that
+-- get no time (client command, damage, weapon fire) read the value of the last
+-- frame through now_ms(), so nothing is ever compared with a reading taken
+-- from a different clock.
+--
+-- Mixing the two is what broke /kill in a fire fight: still_since[] was written
+-- with level.time in the frame loop but compared against et.trap_Milliseconds()
+-- - the process uptime, which is orders of magnitude larger - so is_stuck()
+-- always answered "this player has been stuck here for ages" and let every
+-- /kill through. The same mix-up, the other way round, made the poison needle's
+-- expires/next_tick (written with trap_Milliseconds(), compared with
+-- level.time) unreachable: poison never ticked and never wore off.
+local frame_time = 0
 
 -- ============================== helpers ==================================
 
@@ -275,6 +306,11 @@ local fields = {
 		"sess.latchPlayerWeapon", "sess.latchPlayerWeapon2",
 		"ps.stats", "ps.origin", "ps.viewangles", "ps.viewheight", "ps.weapon",
 		"ps.weapons", "ps.ammo", "ps.ammoclip", "ps.powerups",
+		-- read by the kick feature; ET:Legacy only added ps.velocity (and
+		-- ps.pm_type, ps.leanf) in 2.77, so it has to be probed like the rest:
+		-- an unprobed field that the engine does not have makes client_get()
+		-- mark the whole slot as "no client data" on the first frame
+		"ps.velocity",
 	},
 	-- the class load-out; a soldier's SMG sits in playerWeapon2 when the light
 	-- weapons skill is bought (classSecondaryWeapons in bg_classes.c)
@@ -436,10 +472,7 @@ local function err_once(label, err)
 end
 
 local function now_ms()
-	if type(et.trap_Milliseconds) == "function" then
-		return et.trap_Milliseconds() or 0
-	end
-	return 0
+	return frame_time
 end
 
 local function eyes_of(num, chest_offset)
@@ -938,101 +971,379 @@ local function is_slot2_command(command)
 end
 
 -- =========================== THROWABLE KNIFE =============================
+--
+-- HOW THE KNIFE IS BUILT, because the obvious way does not exist:
+--
+--   * ET:Legacy's Lua API has no et.G_Spawn(). The only entity constructor in
+--     the etlib[] table of g_lua.c is et.G_CreateEntity("<spawn vars>"), which
+--     feeds the key/value string to the engine's own
+--     G_SpawnGEntityFromSpawnVars(). A classname that is not in the spawn table
+--     makes G_CallSpawn() fail and the entity is freed again - which is why the
+--     old "thrown_knife" entity never existed at all. The knife now uses a
+--     classname that does exist and does nothing: "target_position", whose spawn
+--     function is a single G_SetOrigin() (g_target.c). The entity comes back
+--     inert - no think function, no model, no physics, r.contents 0 - so it
+--     blocks nothing and is touched by nothing.
+--
+--   * Lua cannot install a think function, so this module has to be the knife's
+--     G_RunMissile() (g_missile.c): evaluate the trajectory, trace from the
+--     previous position to the new one, move r.currentOrigin, re-link. The
+--     engine only advances an entity's position from its think function, so an
+--     entity Lua links once never moves server-side.
+--
+--   * The knife is drawn as ET_GENERAL, not ET_MISSILE. CG_Missile() picks its
+--     model from s.weapon, and s.weapon is FIELD_FLAG_READONLY in g_lua.c, so
+--     that write always failed (the pcall hid it) and the knife in flight was
+--     invisible. CG_General() draws cgs.gameModels[s.modelindex] instead, and
+--     s.modelindex IS writable, so the knife flies with its own world model from
+--     itemTable[] (bg_misc.c), precached through et.G_ModelIndex().
+--
+--   * The trajectory is written to s.pos as TR_GRAVITY, which the client
+--     evaluates in CG_CalcEntityLerpPositions() with the very same
+--     BG_EvaluateTrajectory() that knife.position() mirrors below. What a player
+--     sees flying is therefore where the server traces it - and both use the
+--     engine's fixed DEFAULT_GRAVITY, not g_gravity.
+--
+-- The throw counter lives in the knife's own ps.ammoclip: weaponTable[] gives
+-- both knives useAmmo/useClip = qfalse and CG_WeaponHasAmmo() exempts
+-- WEAPON_TYPE_MELEE, so neither the engine nor the client ever looks at that
+-- pool and it is free to count with.
+--
+-- Everything the feature needs hangs off this one table: Lua allows 200 locals
+-- per chunk and this module is at that limit (the `fields` table above exists
+-- for the same reason), so twenty functions and ten constants cost one local.
+local knife = {}
 
--- Read current throwable-knife clip for a player.
--- We reuse the weapon's own ammo-clip slot (ps.ammoclip[weapon]) to track
--- how many throws the player has left; the melee stab is never disabled,
+-- engine constants the Lua API does not expose
+knife.ET_GENERAL = 0        -- entityType_t: the type CG_General() renders
+knife.TR_LINEAR  = 2        -- trType_t: the spin
+knife.GRAVITY    = 800      -- DEFAULT_GRAVITY, used by BG_EvaluateTrajectory()
+                            -- for TR_GRAVITY ("FIXME: local gravity...")
+knife.MINS       = { -1, -1, -1 }
+knife.MAXS       = {  1,  1,  1 }
+knife.MASK       = (et and et.MASK_MISSILESHOT) or MASK_SHOT
+knife.MODELS = {
+	[WP_KNIFE]       = "models/multiplayer/knife/knife.md3",
+	[WP_KNIFE_KABAR] = "models/multiplayer/knife_kbar/knife.md3",
+}
+knife.MODS = {
+	[WP_KNIFE]       = MOD_KNIFE,
+	[WP_KNIFE_KABAR] = (et and et.MOD_KNIFE_KABAR) or MOD_KNIFE,
+}
+knife.index = {}            -- [weapon] = modelindex, precached once per map
+
+-- Read how many throws a player has left. The melee stab is never disabled,
 -- only the *throw* is gated on clip > 0.
-local function knife_clip(num, weapon)
+function knife.clip(num, weapon)
 	local c = client_get(num, "ps.ammoclip", weapon)
 	return (type(c) == "number" and c >= 0) and c or KNIFE_CLIP_MAX
 end
 
--- Grant the clip of throwing knives. Called on spawn / revive so the
--- player starts each life with KNIFE_CLIP_MAX throws.
-local function knife_grant_clip(num)
-	if not KNIFE_ENABLE then return end
-	if not is_on_team(num) then return end
-	for w, _ in pairs(KNIVES) do
-		if has_weapon(num, w) then
-			-- ammo=0 reserve, clip=KNIFE_CLIP_MAX ready, setcurrent=0
-			pcall(et.AddWeaponToPlayer, num, w, 0, KNIFE_CLIP_MAX, 0)
-		end
-	end
-end
-
-local function knife_set_clip(num, weapon, new_clip)
+function knife.set_clip(num, weapon, new_clip)
 	if new_clip < 0 then new_clip = 0 end
 	if new_clip > KNIFE_CLIP_MAX then new_clip = KNIFE_CLIP_MAX end
 	local cur_ammo = client_get(num, "ps.ammo", weapon) or 0
 	pcall(et.AddWeaponToPlayer, num, weapon, cur_ammo, new_clip, 0)
 end
 
--- Consume one throw (decrement clip).
-local function knife_consume(num, weapon)
-	local cur = knife_clip(num, weapon)
-	knife_set_clip(num, weapon, cur - 1)
+-- Grant the clip of throwing knives. Called on spawn / revive so the player
+-- starts each life with KNIFE_CLIP_MAX throws.
+function knife.grant_clip(num)
+	if not KNIFE_ENABLE then return end
+	if not is_on_team(num) then return end
+	for w, _ in pairs(KNIVES) do
+		if has_weapon(num, w) then
+			-- et.AddWeaponToPlayer() *assigns* both pools, so hand back the
+			-- reserve the class load-out gave the knife (bg_classes.c:
+			-- startingAmmo 1, startingClip 0) instead of zeroing it
+			local ammo = client_get(num, "ps.ammo", w) or 0
+			pcall(et.AddWeaponToPlayer, num, w, ammo, KNIFE_CLIP_MAX, 0)
+		end
+	end
 end
 
--- Add one throw to the clip (pickup); returns true if added, false if
--- the clip was already full (so the pickup doesn't "eat" a knife that
--- has nowhere to go).
-local function knife_add(num, weapon)
-	local cur = knife_clip(num, weapon)
+-- Consume one throw (decrement clip).
+function knife.consume(num, weapon)
+	knife.set_clip(num, weapon, knife.clip(num, weapon) - 1)
+end
+
+-- Add one throw to the clip (pickup); returns true if added, false if the clip
+-- was already full (so the pickup doesn't "eat" a knife that has nowhere to
+-- go and the knife stays in the world).
+function knife.add(num, weapon)
+	local cur = knife.clip(num, weapon)
 	if cur >= KNIFE_CLIP_MAX then return false end
-	knife_set_clip(num, weapon, cur + 1)
+	knife.set_clip(num, weapon, cur + 1)
 	return true
 end
 
-local function knife_spawn(num, weapon, levelTime)
-	if type(et.G_Spawn) ~= "function" then return nil end
-	local o = client_get(num, "ps.origin")
-	local v = client_get(num, "ps.viewangles")
-	if not o or not v then return nil end
-	local vh = client_get(num, "ps.viewheight") or 32
-	local f = view_forward_pitch_yaw(v)
-	if not f then return nil end
-	local muzzle = { o[1]+f[1]*16, o[2]+f[2]*16, o[3]+vh+f[3]*16 }
-	local ok, ent = pcall(et.G_Spawn)
-	if not ok or type(ent) ~= "number" then return nil end
-	pcall(et.gentity_set, ent, "classname", "thrown_knife")
-	pcall(et.gentity_set, ent, "s.eType", ET_MISSILE)
-	pcall(et.gentity_set, ent, "s.weapon", weapon)
-	pcall(et.gentity_set, ent, "r.ownerNum", num)
-	pcall(et.gentity_set, ent, "s.pos", {
-		trType = TR_GRAVITY, trTime = levelTime, trBase = muzzle,
-		trDelta = { f[1]*THROW_SPEED, f[2]*THROW_SPEED, f[3]*THROW_SPEED + THROW_UP },
-	})
-	pcall(et.gentity_set, ent, "r.currentOrigin", muzzle)
-	if type(et.trap_LinkEntity) == "function" then pcall(et.trap_LinkEntity, ent) end
-	knives[ent] = { owner = num, weapon = weapon, last = muzzle, landed = nil }
-	return ent
-end
-
-local function knife_give_back(num, weapon)
-	-- A pickup adds one to the clip, capped at KNIFE_CLIP_MAX. If the
-	-- player is already full, return false so the knife stays in the world.
-	return knife_add(num, weapon)
-end
-
-local function knife_free(ent)
+function knife.free(ent)
 	knives[ent] = nil
 	if type(et.G_FreeEntity) == "function" then pcall(et.G_FreeEntity, ent) end
 end
 
-local function knife_hit_player(ent, k, victim, hitpos)
+-- G_Spawn() calls G_Error() - which takes the whole server down - when the
+-- entity pool runs out, so the number of knives in the world is capped and the
+-- oldest one is freed to make room.
+function knife.prune()
+	local live = 0
+	for _ in pairs(knives) do live = live + 1 end
+	while live >= KNIFE_MAX_LIVE do
+		local oldest, oldest_ent
+		for ent, k in pairs(knives) do
+			if not oldest or (k.spawned or 0) < oldest then
+				oldest, oldest_ent = k.spawned or 0, ent
+			end
+		end
+		if not oldest_ent then return end
+		knife.free(oldest_ent)
+		live = live - 1
+	end
+end
+
+-- precache the world models once per map; et.G_ModelIndex() allocates the
+-- CS_MODELS configstring the client reads cgs.gameModels[] from
+function knife.register_models()
+	knife.index = {}
+	if not KNIFE_MODEL then return end
+	if type(et.G_ModelIndex) ~= "function" then return end
+	for w, path in pairs(knife.MODELS) do
+		local ok, idx = pcall(et.G_ModelIndex, path)
+		if ok and type(idx) == "number" and idx > 0 then
+			knife.index[w] = idx
+		elseif not ok then
+			err_once("knife_model:" .. path, idx)
+		end
+	end
+end
+
+function knife.create(origin)
+	if type(et.G_CreateEntity) ~= "function" then return nil end
+	local vars = string.format('classname %s origin "%.1f %.1f %.1f"',
+		KNIFE_SPAWN_CLASS, origin[1], origin[2], origin[3])
+	local ok, ent = pcall(et.G_CreateEntity, vars)
+	if not ok then
+		err_once("knife_create", ent)
+		return nil
+	end
+	if type(ent) ~= "number" then return nil end
+	-- G_SpawnGEntityFromSpawnVars() frees the entity again when it cannot call
+	-- a spawn function for the classname; never track a slot the engine has
+	-- already given up, or the next knife.free() would free somebody else's
+	local ok2, inuse = pcall(et.gentity_get, ent, "inuse")
+	if not ok2 or inuse ~= 1 then return nil end
+	return ent
+end
+
+-- angles that point a model's forward axis along `dir` (vectoangles() in
+-- q_math.c, which negates the elevation because AngleVectors() computes
+-- forward[2] as -sin(pitch)). math.atan2 is gone in Lua 5.3+ (math.atan takes
+-- two arguments there) and math.atan(y, x) does not exist in the Lua 5.1 /
+-- LuaJIT builds ET:Legacy can be compiled with, so support both.
+function knife.angles_of(dir)
+	local len = math.sqrt(dir[1]*dir[1] + dir[2]*dir[2] + dir[3]*dir[3])
+	if len < 0.0001 then return { 0, 0, 0 } end
+	local yaw
+	if math.atan2 then yaw = math.atan2(dir[2], dir[1]) else yaw = math.atan(dir[2], dir[1]) end
+	return { -math.deg(math.asin(math.max(-1, math.min(1, dir[3] / len)))), math.deg(yaw), 0 }
+end
+
+-- BG_EvaluateTrajectory() for TR_GRAVITY (bg_misc.c): base + delta*t with the
+-- fixed DEFAULT_GRAVITY pulled off the z component.
+function knife.position(k, time)
+	local dt = (time - k.time0) * 0.001
+	return {
+		k.base[1] + k.delta[1] * dt,
+		k.base[2] + k.delta[2] * dt,
+		k.base[3] + k.delta[3] * dt - 0.5 * knife.GRAVITY * dt * dt,
+	}
+end
+
+function knife.spawn(num, weapon, levelTime)
+	local o = client_get(num, "ps.origin")
+	local v = client_get(num, "ps.viewangles")
+	if not o or not v then return nil end
+	local f = view_forward_pitch_yaw(v)
+	if not f then return nil end
+	local vh = client_get(num, "ps.viewheight") or 32
+	-- out in front of the eyes, like the engine's own muzzle point
+	local muzzle = { o[1] + f[1]*16, o[2] + f[2]*16, o[3] + vh + f[3]*16 }
+	local delta  = { f[1]*THROW_SPEED, f[2]*THROW_SPEED, f[3]*THROW_SPEED + THROW_UP }
+	local angles = knife.angles_of(delta)
+
+	knife.prune()
+	local ent = knife.create(muzzle)
+	if not ent then return nil end
+
+	-- ET_GENERAL + s.modelindex is the one combination Lua can write and the
+	-- client draws (CG_General); ET_MISSILE would need the read-only s.weapon
+	pcall(et.gentity_set, ent, "s.eType", knife.ET_GENERAL)
+	if knife.index[weapon] then
+		pcall(et.gentity_set, ent, "s.modelindex", knife.index[weapon])
+	end
+	pcall(et.gentity_set, ent, "r.ownerNum", num)
+	pcall(et.gentity_set, ent, "r.mins", knife.MINS)
+	pcall(et.gentity_set, ent, "r.maxs", knife.MAXS)
+	pcall(et.gentity_set, ent, "clipmask", knife.MASK)
+	pcall(et.gentity_set, ent, "s.angles", angles)
+	pcall(et.gentity_set, ent, "s.pos", {
+		trType = TR_GRAVITY, trTime = levelTime, trBase = muzzle, trDelta = delta,
+	})
+	pcall(et.gentity_set, ent, "s.apos", {
+		trType = (KNIFE_SPIN > 0) and knife.TR_LINEAR or TR_STATIONARY,
+		trTime = levelTime, trBase = angles, trDelta = { KNIFE_SPIN, 0, 0 },
+	})
+	pcall(et.gentity_set, ent, "r.currentOrigin", muzzle)
+	if type(et.trap_LinkEntity) == "function" then pcall(et.trap_LinkEntity, ent) end
+
+	knives[ent] = {
+		owner   = num,
+		weapon  = weapon,
+		spawned = levelTime,
+		time0   = levelTime,
+		base    = muzzle,
+		delta   = delta,
+		last    = { muzzle[1], muzzle[2], muzzle[3] },
+		landed  = nil,
+		resting = nil,
+	}
+	return ent
+end
+
+function knife.hit_player(ent, k, victim, hitpos)
 	local vo = client_get(victim, "ps.origin")
 	local dmg = THROW_DAMAGE
-	if vo and hitpos and hitpos[3] - vo[3] >= KNIFE_HEAD_HEIGHT then
+	-- head box: origin + viewheight, mins z -2 (G_BuildHead, g_combat.c). Using
+	-- the victim's own viewheight means a crouching player is still headshottable
+	local head = KNIFE_HEAD_HEIGHT
+	local vh = client_get(victim, "ps.viewheight")
+	if type(vh) == "number" and vh > 0 then head = vh - 2 end
+	if vo and hitpos and hitpos[3] - vo[3] >= head then
 		dmg = THROW_DAMAGE_HEAD
 	end
-	pcall(et.G_Damage, victim, k.owner, k.owner, dmg, 0, MOD_KNIFE)
+	-- et.G_Damage(target, inflictor, attacker, damage, dflags, mod)
+	pcall(et.G_Damage, victim, k.owner, k.owner, dmg, 0, knife.MODS[k.weapon] or MOD_KNIFE)
+end
+
+function knife.land(ent, k, pos, levelTime)
+	-- stick the knife in whatever stopped it, pointing along the velocity it
+	-- had on impact (BG_EvaluateTrajectoryDelta() for TR_GRAVITY)
+	local dt = (levelTime - k.time0) * 0.001
+	local angles = knife.angles_of({ k.delta[1], k.delta[2], k.delta[3] - knife.GRAVITY * dt })
+	k.landed  = levelTime
+	k.resting = { pos[1], pos[2], pos[3] }
+	-- freeze the trajectory where the trace says it stopped, so the client's
+	-- model stops exactly where the server put the entity
+	pcall(et.gentity_set, ent, "s.pos", {
+		trType = TR_STATIONARY, trTime = levelTime, trBase = k.resting, trDelta = { 0, 0, 0 },
+	})
+	pcall(et.gentity_set, ent, "s.apos", {
+		trType = TR_STATIONARY, trTime = levelTime, trBase = angles, trDelta = { 0, 0, 0 },
+	})
+	pcall(et.gentity_set, ent, "s.angles", angles)
+	pcall(et.gentity_set, ent, "r.currentOrigin", k.resting)
+	if type(et.trap_LinkEntity) == "function" then pcall(et.trap_LinkEntity, ent) end
+end
+
+-- one frame of flight, i.e. what G_RunMissile() does for the engine's own
+-- grenades: trace from the previous position to the new one - ignoring the
+-- thrower, whose bounding box the muzzle starts inside - then hit, land, or
+-- move and re-link.
+-- One trace of this frame's segment; nil when the engine has no trap_Trace.
+function knife.trace(from, to, passent)
+	if type(et.trap_Trace) ~= "function" then return nil end
+	local ok, t = pcall(et.trap_Trace, from, knife.MINS, knife.MAXS, to, passent, knife.MASK)
+	if ok and type(t) == "table" then return t end
+	return nil
+end
+
+-- A player the knife may damage. Teammates are not one, and neither is a corpse
+-- or a spectator.
+function knife.is_target(hit, k)
+	if type(hit) ~= "number" or hit < 0 or hit >= get_client_slots() then return false end
+	if hit == k.owner or not has_client(hit) or not is_alive(hit) then return false end
+	local theirs = team_of(hit)
+	if not theirs then return false end
+	local mine = team_of(k.owner)
+	return not (mine and mine == theirs)
+end
+
+-- A body the knife flies through instead of hitting.
+function knife.pass_through(hit, k)
+	if type(hit) ~= "number" or hit < 0 or hit >= get_client_slots() then return false end
+	return has_client(hit) and not knife.is_target(hit, k)
+end
+
+-- one frame of flight, i.e. what G_RunMissile() does for the engine's own
+-- grenades: trace from the previous position to the new one - ignoring the
+-- thrower, whose bounding box the muzzle starts inside - then hit, land, or
+-- move and re-link.
+function knife.fly(ent, k, levelTime)
+	local pos = knife.position(k, levelTime)
+	-- G_Damage() refuses a same-team target unless the server turned
+	-- g_friendlyFire on (g_combat.c:1627), so hitting a friendly would spend
+	-- the knife for nothing and make throwing it in a group useless. A trace
+	-- that stops on a body which is not a target is therefore continued from the
+	-- hit point, with that body as the new passent. One pass-through per frame
+	-- is plenty: at THROW_SPEED the knife covers 70 units in a 50ms frame and a
+	-- player is 36 units wide.
+	local tr = knife.trace(k.last, pos, k.owner)
+	if tr and knife.pass_through(tr.entityNum, k) then
+		tr = knife.trace(tr.endpos or pos, pos, tr.entityNum) or tr
+	end
+
+	if tr then
+		local frac = tr.fraction
+		if tr.startsolid then frac = 0 end
+		local hit = tr.entityNum
+		if knife.is_target(hit, k) then
+			knife.hit_player(ent, k, hit, tr.endpos or pos)
+			knife.free(ent)
+			return
+		end
+		if knife.pass_through(hit, k) then
+			-- still inside a friendly: keep flying, never stick in a teammate
+			tr = nil
+		elseif type(frac) == "number" and frac < 1 then
+			knife.land(ent, k, tr.endpos or pos, levelTime)
+			return
+		end
+	end
+
+	k.last = { pos[1], pos[2], pos[3] }
+	pcall(et.gentity_set, ent, "r.currentOrigin", pos)
+	if type(et.trap_LinkEntity) == "function" then pcall(et.trap_LinkEntity, ent) end
+end
+
+function knife.pickup(ent, k, levelTime)
+	if levelTime - (k.landed or levelTime) >= KNIFE_LIFETIME_MS then
+		knife.free(ent)
+		return
+	end
+	local pos = k.resting
+	if not pos then return end
+	local range_sq = KNIFE_PICKUP_RANGE * KNIFE_PICKUP_RANGE
+	for c = 0, get_client_slots() - 1 do
+		if has_client(c) and is_alive(c) and team_of(c) then
+			local o = client_get(c, "ps.origin")
+			if o and dist2(o, pos) <= range_sq then
+				if knife.add(c, k.weapon) then
+					knife.free(ent)
+					return
+				end
+			end
+		end
+	end
 end
 
 -- ========================= EVENT HANDLERS ================================
 
 -- runs every server frame - each feature isolated
 local function on_game_frame(levelTime)
+	-- the module's clock: everything below, and every callback that runs
+	-- between two frames, reads time from here
+	frame_time = tonumber(levelTime) or frame_time
+
 	-- adrenaline strip medics
 	if ADRENALINE_ENABLE then
 		local ok, err = pcall(function()
@@ -1176,49 +1487,21 @@ local function on_game_frame(levelTime)
 		local ok, err = pcall(function()
 			for ent, k in pairs(knives) do
 				local ok2, inuse = pcall(et.gentity_get, ent, "inuse")
-				if not ok2 or inuse ~= 1 then
+				local ok3, cls   = pcall(et.gentity_get, ent, "classname")
+				local mine = ok2 and inuse == 1
+					and (not ok3 or cls == KNIFE_SPAWN_CLASS)
+				if not mine then
+					-- the engine gave this slot up (a map script, another mod)
+					-- and something else moved in: drop the record and never
+					-- free an entity that is not ours
 					knives[ent] = nil
 				elseif k.landed then
-					if levelTime - k.landed >= KNIFE_LIFETIME_MS then
-						knife_free(ent)
-					else
-						local ok3, pos = pcall(et.gentity_get, ent, "r.currentOrigin")
-						if not ok3 or not pos then ok3, pos = pcall(et.gentity_get, ent, "origin") end
-						if ok3 and pos then
-							for c = 0, get_client_slots() - 1 do
-								if has_client(c) and is_alive(c) and team_of(c) then
-									local o = client_get(c, "ps.origin")
-									if o and dist2(o, pos) <= KNIFE_PICKUP_RANGE*KNIFE_PICKUP_RANGE then
-										if knife_give_back(c, k.weapon) then knife_free(ent) break end
-									end
-								end
-							end
-						end
-					end
+					knife.pickup(ent, k, levelTime)
+				elseif levelTime - (k.spawned or levelTime) >= KNIFE_LIFETIME_MS then
+					-- flew out of the world without ever hitting anything
+					knife.free(ent)
 				else
-					local ok3, pos = pcall(et.gentity_get, ent, "r.currentOrigin")
-					if not ok3 or not pos then ok3, pos = pcall(et.gentity_get, ent, "origin") end
-					if ok3 and pos then
-						local tr
-						if type(et.trap_Trace) == "function" then
-							local ok4, t = pcall(et.trap_Trace, k.last, nil, nil, pos, ent, MASK_SHOT)
-							if ok4 and type(t) == "table" then tr = t end
-						end
-						if tr then
-							local hitent = tr.entityNum
-							local frac   = tr.fraction or 1
-							if type(hitent) == "number" and hitent < get_client_slots() and has_client(hitent) and is_alive(hitent) and hitent ~= k.owner then
-								knife_hit_player(ent, k, hitent, tr.endpos or pos)
-								knife_free(ent)
-							elseif frac < 1 then
-								local endpos = tr.endpos or pos
-								pcall(et.gentity_set, ent, "s.pos", { trType = TR_STATIONARY, trTime = levelTime, trBase = endpos, trDelta = {0,0,0}, })
-								pcall(et.gentity_set, ent, "r.currentOrigin", endpos)
-								k.landed = levelTime
-							end
-						end
-						k.last = pos
-					end
+					knife.fly(ent, k, levelTime)
 				end
 			end
 		end)
@@ -1260,7 +1543,7 @@ local function on_player_spawn(clientId, revived)
 	end
 
 	if KNIFE_ENABLE then
-		knife_grant_clip(clientId)
+		knife.grant_clip(clientId)
 	end
 
 	if SMG_SLOT2_ENABLE and GRANT_TEAM_SMG and cls == PC_SOLDIER then
@@ -1438,11 +1721,11 @@ local function on_weapon_fire(clientId, weapon)
 
 			-- Require at least one throw in the clip; if empty, let the
 			-- engine do the normal melee stab (return 0).
-			if knife_clip(clientId, weapon) <= 0 then return 0 end
+			if knife.clip(clientId, weapon) <= 0 then return 0 end
 
-			if not knife_spawn(clientId, weapon, now) then return 0 end
+			if not knife.spawn(clientId, weapon, now) then return 0 end
 			next_throw[clientId] = now + THROW_COOLDOWN_MS
-			knife_consume(clientId, weapon)
+			knife.consume(clientId, weapon)
 			return 1   -- swallow the melee stab; the thrown knife is the attack
 		end)
 		if ok then intercepted = res else err_once("knife_fire", res) end
@@ -1457,6 +1740,10 @@ local function on_game_init(levelTime, randomSeed, isRestart)
 	reported_errors = {}
 	refresh_client_slots()
 	fields.probe()
+
+	-- the clock starts at this map's level.time; every later reading comes
+	-- from onGameFrame()
+	frame_time = tonumber(levelTime) or 0
 
 	last_kick = {}; kick_sound_index = 0; last_kick_debug = 0
 	last_weapon = {}
@@ -1476,6 +1763,8 @@ local function on_game_init(levelTime, randomSeed, isRestart)
 		if ok and idx and idx ~= 0 then kick_sound_index = idx end
 	end
 
+	if KNIFE_ENABLE then knife.register_models() end
+
 	log("loaded (client slots: " .. get_client_slots() .. ")")
 	local feats = {}
 	if ADRENALINE_ENABLE  then feats[#feats+1] = "adrenaline+slot7" end
@@ -1491,8 +1780,13 @@ local function on_game_init(levelTime, randomSeed, isRestart)
 	if type(et.AddWeaponToPlayer) ~= "function" then
 		log("WARNING: et.AddWeaponToPlayer missing - some features will not work")
 	end
-	if type(et.G_Spawn) ~= "function" then
-		log("WARNING: et.G_Spawn missing - throwable knife disabled")
+	-- et.G_Spawn() does not exist in ET:Legacy's Lua API (the etlib[] table in
+	-- g_lua.c); entities come from et.G_CreateEntity("<spawn vars>")
+	if type(et.G_CreateEntity) ~= "function" then
+		log("WARNING: et.G_CreateEntity missing - throwable knife disabled")
+	end
+	if KNIFE_ENABLE and type(et.G_ModelIndex) ~= "function" then
+		log("WARNING: et.G_ModelIndex missing - thrown knives will be invisible")
 	end
 end
 

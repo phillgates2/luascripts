@@ -60,6 +60,12 @@ local function new_server(opts)
 	local engine = stub.new(opts)
 	engine.install()
 	local events = wolfa_requireModule("util.events")
+	-- main.lua requires commands.commands (line 138) before game.gameplay (line
+	-- 143), so WolfAdmin's own onClientCommand handler sits first on the bus and
+	-- ends in an unconditional `return 0`. Registering it here is what makes
+	-- these tests fail on an events.trigger() that keeps the first non-nil
+	-- return value instead of the first *blocking* one.
+	events.handle("onClientCommand", stub.wolfadmin_client_command(engine))
 	wolfa_requireModule("game.gameplay")
 	events.trigger("onGameInit", 0, 0, false)
 	return engine, events
