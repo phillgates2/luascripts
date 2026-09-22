@@ -302,16 +302,24 @@ test("/kill is refused while an enemy can see you", function()
 		"a teammate watching does not lock /kill")
 end)
 
--- The clock. still_since[] is written from levelTime, so comparing it against
--- et.trap_Milliseconds() (process uptime, which is already minutes ahead on a
--- live server) made is_stuck() true for every player who stood still - and
--- is_stuck() returning true means "let them /kill". The module now keeps one
--- clock, driven by et_RunFrame.
+-- The clock. et.trap_Milliseconds() is Sys_Milliseconds() - wall clock since the
+-- server process started (sv_game.c:447) - while level.time is sv.time, which
+-- the server carries across map changes and resets to 0 only when
+-- sv_serverTimeReset is 1 (sv_init.c:812, default 0). On a server that sets it
+-- the two readings are hours apart, and the old code wrote still_since[] from
+-- levelTime but compared it against trap_Milliseconds(): is_stuck() then
+-- answered "stuck here for ages" for every player who stood still for a frame,
+-- and is_stuck() answering true means "let them /kill". Poison was the same bug
+-- the other way round - expires/next_tick from trap_Milliseconds(), compared
+-- against levelTime in on_game_frame(), so it never ticked and never wore off.
+-- The module now keeps one clock, driven by et_RunFrame.
 test("the frame clock decides, not the process clock", function()
 	local engine, events = new_server({ sv_maxclients = 16 })
-	-- nine minutes of server uptime before the map script's first frame
+	-- the sv_serverTimeReset 1 case: nine minutes of process uptime, and this
+	-- map's level.time starts over at 1000
 	engine.advance(500000)
-	check(et.trap_Milliseconds() > 500000, "the engine clock is far ahead of levelTime")
+	check(et.trap_Milliseconds() > 500000,
+		"trap_Milliseconds() is far ahead of the level time the frames report")
 
 	player(engine, events, 3, TEAM_AXIS, PC_MEDIC, { 0, 0, 0 })
 	player(engine, events, 5, TEAM_ALLIES, PC_SOLDIER, { 5000, 0, 0 })

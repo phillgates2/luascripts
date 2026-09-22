@@ -237,13 +237,24 @@ local enabled = true
 -- frame through now_ms(), so nothing is ever compared with a reading taken
 -- from a different clock.
 --
--- Mixing the two is what broke /kill in a fire fight: still_since[] was written
--- with level.time in the frame loop but compared against et.trap_Milliseconds()
--- - the process uptime, which is orders of magnitude larger - so is_stuck()
--- always answered "this player has been stuck here for ages" and let every
--- /kill through. The same mix-up, the other way round, made the poison needle's
--- expires/next_tick (written with trap_Milliseconds(), compared with
--- level.time) unreachable: poison never ticked and never wore off.
+-- The two readings this module could use are equal only by coincidence:
+-- et.trap_Milliseconds() is Sys_Milliseconds() (sv_game.c:447), wall clock since
+-- the server process started, while level.time is sv.time, which the server
+-- carries across map changes and resets to 0 only when sv_serverTimeReset is 1
+-- (sv_init.c:812; the default is 0). On a server that sets it - and after the
+-- 23-day wraparound restart, which resets sv.time as well - the two are minutes
+-- to hours apart, and every comparison that mixes them fails the same silent
+-- way:
+--
+--   * still_since[] written with level.time but compared against
+--     trap_Milliseconds() makes is_stuck() answer "stuck here for ages" for
+--     every player who stands still, and is_stuck() answering true is what lets
+--     a /kill through before the combat window is ever looked at;
+--   * poison's expires/next_tick written with trap_Milliseconds() and compared
+--     against level.time in on_game_frame() are never reached, so the poison
+--     never ticks and never wears off.
+--
+-- One clock, read in one place, removes the coincidence.
 local frame_time = 0
 
 -- ============================== helpers ==================================

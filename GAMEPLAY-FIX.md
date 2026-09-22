@@ -282,12 +282,17 @@ zero-pool guard in `syringe_grant()` is removed.
 
 ## 8. Follow-up: "throw knife and /kill in combat not working"
 
-Two features, five distinct causes. Neither was reachable from the existing
-specs, and both were partly hidden by the test harness rather than by the
-module: `tests/gameplay_spec.lua` loaded `game/gameplay.lua` on its own, and
-`tests/et_stub.lua` answered "yes" to two engine calls that decide everything.
+Two features. `/kill` needed two fixes: one is the reason it never worked at
+all, the other is a defect that breaks it - and the poison needle with it - on
+any server whose clock is not the default one. The knife needed a rewrite,
+because it was built on an engine function that does not exist.
 
-### 8.1 `/kill`: three causes stacked on top of each other
+Neither was reachable from the existing specs, and both were hidden by the test
+harness rather than by the module: `tests/gameplay_spec.lua` loaded
+`game/gameplay.lua` on its own, and `tests/et_stub.lua` answered "yes" to two
+engine calls that decide everything.
+
+### 8.1 `/kill`: the reason it never worked, plus a second defect
 
 **(a) `events.trigger()` kept the first non-nil answer.** `main.lua` requires
 `commands.commands` (line 138) before `game.gameplay` (line 143), so
@@ -305,24 +310,35 @@ order is guaranteed (`events.handle()` uses `table.insert`; `pairs()` left the
 order to the implementation). This is what makes every interception in this
 module work - slot 7, slot 5, slot 2 and `/kill` alike.
 
-**(b) Two clocks.** `still_since[]` was written from `levelTime` (the argument
-`et_RunFrame()` passes) but `is_stuck()` compared it against `now_ms()`, which
-read `et.trap_Milliseconds()` - the *process* uptime, minutes ahead of level
-time on a live server. So `now - still_since >= STUCK_GRACE_MS` was true for
-anyone who stood still for a moment, and `is_stuck()` returning true means
-"let them `/kill`": the handler bailed out with `return 0` before the combat
-window was ever looked at. The same mixing broke the poison needle - `expires`
-and `next_tick` came from `now_ms()` while `on_game_frame()` compares them
-against `levelTime`, so poison was applied and then never ticked.
+**(b) A second defect in the same handler: two clocks.** `still_since[]` was
+written from `levelTime` (the argument `et_RunFrame()` passes) but `is_stuck()`
+compared it against `now_ms()`, which read `et.trap_Milliseconds()`. Those two
+readings are equal only by coincidence:
+
+| reading | source | when it resets |
+| --- | --- | --- |
+| `level.time` | `sv.time`, handed to `GAME_INIT`/`GAME_RUN_FRAME` (`sv_game.c:788`, `sv_main.c:1580`) | carried across map changes (`sv_init.c:656`); reset to 0 only with `sv_serverTimeReset 1` (`sv_init.c:812`, default `0`) or on the 23-day wraparound (`sv_main.c:1694`) |
+| `et.trap_Milliseconds()` | `Sys_Milliseconds()` (`sv_game.c:447`) | never - wall clock since the server process started |
+
+On a stock server the two track each other, so this is **not** what made `/kill`
+fail - (a) did, on every server. It is a live bug on any server that sets
+`sv_serverTimeReset 1`, where `level.time` starts again at 0 on every map while
+`trap_Milliseconds()` is already hours ahead. There, `now - still_since >=
+STUCK_GRACE_MS` is true for every player who stands still for a single frame,
+and `is_stuck()` answering true means "let them `/kill`", so the handler
+returned `0` before the combat window was ever looked at. The same mix-up the
+other way round made the poison needle's `expires`/`next_tick` unreachable:
+poison was applied, then never ticked and never wore off.
 
 The module now keeps one clock: `frame_time`, set at the top of
-`on_game_frame()`, and `now_ms()` returns it. The two clocks are only ever
-equal inside the test stub, which is why the suite never saw this.
+`on_game_frame()`, with `now_ms()` returning it. Nothing in `game/gameplay.lua`
+reads `et.trap_Milliseconds()` any more, so no comparison depends on the two
+readings happening to agree.
 
-**(c)** Only after (a) and (b) does the rule itself run. The rule is unchanged:
-blocked for `COMBAT_WINDOW_MS` after damage between enemies, or while an enemy
-within `SIGHT_RANGE` and inside the cone has line of sight; free for a player
-who has not moved for `STUCK_GRACE_MS`, who is dead, or who is not on a team.
+The rule itself is unchanged: blocked for `COMBAT_WINDOW_MS` after damage
+between enemies, or while an enemy within `SIGHT_RANGE` and inside the cone has
+line of sight; free for a player who has not moved for `STUCK_GRACE_MS`, who is
+dead, or who is not on a team.
 
 ### 8.2 The throwable knife: `et.G_Spawn()` does not exist
 
@@ -430,8 +446,8 @@ out, from the engine sources, everything the API does *not* do for you:
 
 `tests/knife_kill_spec.lua` - 126 checks over ten tests: `/kill` in the combat
 window and after it, the sight rule with and without a wall in the way, the
-stuck grace period, the frame clock against a process clock nine minutes ahead
-(including poison ticking on schedule), the throw itself and every field the
+stuck grace period, the frame clock against a process clock nine minutes ahead - the
+`sv_serverTimeReset 1` case - including poison ticking on schedule, the throw itself and every field the
 client needs to see it, the flight against `BG_EvaluateTrajectory()`, body and
 headshot damage with the right MOD per team, teammates and corpses, landing,
 pickup, a full clip, the lifetime, the cooldown, an empty clip falling through
@@ -443,7 +459,7 @@ mutation reports a clean failure list rather than a crash:
 | mutation (the pre-fix behaviour) | failing checks |
 | --- | --- |
 | `events.trigger()` keeps the first non-nil return | 8 (+9 in `gameplay_spec`) |
-| `now_ms()` = `et.trap_Milliseconds()` | 26 |
+| `now_ms()` = `et.trap_Milliseconds()`, clocks apart (`sv_serverTimeReset 1`) | 26 |
 | stub provides `et.G_Spawn()` instead of `et.G_CreateEntity()` | 71 |
 | `KNIFE_HEAD_HEIGHT = 46`, no `ps.viewheight` | 1 |
 | no pass-through trace (knife hits teammates) | 2 |
@@ -456,3 +472,33 @@ mutation reports a clean failure list rather than a crash:
 
 Full suite: `gameplay_spec` 38, `slot5_engine_spec` 20, `honors_spec` 34,
 `knife_kill_spec` 126 - 218 checks, all passing.
+
+### 8.5 The same mix-up elsewhere in the tree (audited, not changed here)
+
+Two admin commands write a timestamp that the *engine* compares against
+`level.time`, and they take it from `et.trap_Milliseconds()`:
+
+- `commands/admin/burn.lua:83-84` - `s.onFireStart` / `s.onFireEnd`
+- `commands/admin/firegod.lua:85,103-104` - the same two fields; its toggle-off
+  writes `s.onFireEnd = now` to extinguish the player
+
+`ClientThink()` burns a player while `ent->s.onFireEnd > level.time`
+(`g_active.c:206`) and `CopyClientBody()` makes the same comparison
+(`g_client.c:686`). On a stock server (`sv_serverTimeReset 0`) the readings agree
+and both commands behave. With `sv_serverTimeReset 1`, `!burn` writes an
+`onFireEnd` that is hours ahead of `level.time`, so the victim keeps taking
+flamethrower damage for the rest of the server's uptime instead of six seconds -
+and `!firegod`'s "extinguish" leaves the flames on, because the value it writes
+is still larger than `level.time`.
+
+The fix has the same shape as the one in this module: keep `level.time` in one
+place (`main.lua:199` already hands it to `onGameFrame`, and `util/timers.lua:54`
+already receives it) and use that for anything the engine reads back. It is not
+part of this change, which is confined to `game/gameplay.lua`, `util/events.lua`
+and the tests.
+
+Checked and **not** affected: `util/timers.lua` (its start and its comparison
+both come from `trap_Milliseconds()`, so the interval is a duration inside one
+clock) and `game/honors.lua:463` (the same, for its snapshot interval).
+`util/logs.lua:85` labels log lines with `trap_Milliseconds() / 1000` as though
+it were map time - cosmetic, and only wrong under the same cvar.
