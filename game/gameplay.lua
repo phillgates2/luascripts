@@ -109,6 +109,20 @@ local KNIFE_MODEL           = true  -- draw it with the knife's own world model
 local KNIFE_SPIN            = 720   -- degrees/second of tumble (0 = no spin)
 local KNIFE_MAX_LIVE        = 12    -- cap on knives in the world (entity slots)
 local KNIFE_SPAWN_CLASS     = "target_position"
+-- G_Spawn() - reached through et.G_CreateEntity() - answers an empty entity
+-- pool with G_Error("G_Spawn: no free entities"), and G_Error takes the whole
+-- server down. Before a throw the spawn is refused while fewer than this many
+-- entity slots remain free, so a starved map or mod can never reach that line
+-- through this feature (the refused throw falls through to the normal melee
+-- stab and costs nothing).
+local KNIFE_MIN_FREE_ENTITIES = 8
+-- Set "g_knifeDebug 1" to announce every engine call on the knife's throw and
+-- flight path to the console and games.log BEFORE it runs. A native crash
+-- (segfault) cannot be caught from Lua - pcall() only protects against the C
+-- glue raising a Lua error, never against C dying - but it can be bracketed:
+-- the last "knife:" line in the log names the exact call that killed the
+-- server. Off by default; it is pure diagnostics, the feature behaves the
+-- same with it on.
 
 -- misc
 DEBUG                 = false
@@ -1043,6 +1057,29 @@ knife.MODS = {
 }
 knife.index = {}            -- [weapon] = modelindex, precached once per map
 
+-- --- crash bracketing (g_knifeDebug 1) -------------------------------------
+-- Whether the stage trace is on; refreshed once per frame and once per throw,
+-- never per engine call, so the flag itself costs nothing when off.
+knife.debugging = false
+
+function knife.debug_on()
+	if type(et.trap_Cvar_Get) ~= "function" then return false end
+	return et.trap_Cvar_Get("g_knifeDebug") == "1"
+end
+
+-- One stage line: the engine call that is about to run, with its arguments.
+-- G_LogPrint() writes to the console AND games.log (unlike log()/G_Print(),
+-- which only reach the console), so the bracket survives the crash.
+function knife.stage(msg)
+	if not knife.debugging then return end
+	local text = MODULE_TAG .. " knife: " .. msg .. "\n"
+	if type(et.G_LogPrint) == "function" then
+		pcall(et.G_LogPrint, text)
+	else
+		log("knife: " .. msg)
+	end
+end
+
 -- Read how many throws a player has left. The melee stab is never disabled,
 -- only the *throw* is gated on clip > 0.
 function knife.clip(num, weapon)
@@ -1089,6 +1126,7 @@ function knife.add(num, weapon)
 end
 
 function knife.free(ent)
+	knife.stage("G_FreeEntity ent " .. tostring(ent))
 	knives[ent] = nil
 	if type(et.G_FreeEntity) == "function" then pcall(et.G_FreeEntity, ent) end
 end
@@ -1132,16 +1170,29 @@ function knife.create(origin)
 	if type(et.G_CreateEntity) ~= "function" then return nil end
 	local vars = string.format('classname %s origin "%.1f %.1f %.1f"',
 		KNIFE_SPAWN_CLASS, origin[1], origin[2], origin[3])
+	knife.stage('G_CreateEntity("' .. vars .. '")')
 	local ok, ent = pcall(et.G_CreateEntity, vars)
+	knife.stage("G_CreateEntity -> ok=" .. tostring(ok) .. " ent=" .. tostring(ent))
 	if not ok then
 		err_once("knife_create", ent)
 		return nil
 	end
 	if type(ent) ~= "number" then return nil end
+	-- The C glue never range-checks the entity number: _et_gentity_get/set,
+	-- _et_G_FreeEntity and _et_trap_LinkEntity all do "g_entities + n" raw, so
+	-- a number outside the array is not a Lua error - it is a segfault on the
+	-- very next field access. Entity slots below MAX_CLIENTS are the players'.
+	if ent < MAX_CLIENTS or ent >= MAX_ENTITIES then
+		err_once("knife_create_range", "entity number " .. tostring(ent)
+			.. " outside g_entities[" .. MAX_CLIENTS .. ".." .. (MAX_ENTITIES - 1) .. "]")
+		return nil
+	end
 	-- G_SpawnGEntityFromSpawnVars() frees the entity again when it cannot call
 	-- a spawn function for the classname; never track a slot the engine has
 	-- already given up, or the next knife.free() would free somebody else's
 	local ok2, inuse = pcall(et.gentity_get, ent, "inuse")
+	knife.stage("gentity_get(ent " .. ent .. ", inuse) -> ok=" .. tostring(ok2)
+		.. " inuse=" .. tostring(inuse))
 	if not ok2 or inuse ~= 1 then return nil end
 	return ent
 end
@@ -1183,8 +1234,22 @@ function knife.spawn(num, weapon, levelTime)
 	local angles = knife.angles_of(delta)
 
 	knife.prune()
+	-- G_Spawn(), reached through G_CreateEntity(), answers a full entity pool
+	-- with G_Error("G_Spawn: no free entities") - an engine abort that shuts
+	-- the whole server down, with nothing Lua can catch. Keep this feature
+	-- away from that line entirely: refuse the throw while the pool is nearly
+	-- dry. A refused throw spends no clip and sets no cooldown, so the engine
+	-- falls through to the normal melee stab.
+	if type(et.G_EntitiesFree) == "function" then
+		local ok, free = pcall(et.G_EntitiesFree)
+		knife.stage("G_EntitiesFree -> ok=" .. tostring(ok) .. " free=" .. tostring(free))
+		if ok and type(free) == "number" and free < KNIFE_MIN_FREE_ENTITIES then
+			return nil
+		end
+	end
 	local ent = knife.create(muzzle)
 	if not ent then return nil end
+	knife.stage("spawn ent " .. ent .. ": s.eType/s.modelindex/owner/box")
 
 	-- ET_GENERAL + s.modelindex is the one combination Lua can write and the
 	-- client draws (CG_General); ET_MISSILE would need the read-only s.weapon
@@ -1200,12 +1265,16 @@ function knife.spawn(num, weapon, levelTime)
 	pcall(et.gentity_set, ent, "s.pos", {
 		trType = TR_GRAVITY, trTime = levelTime, trBase = muzzle, trDelta = delta,
 	})
+	knife.stage("spawn ent " .. ent .. ": s.pos/s.apos trajectories")
 	pcall(et.gentity_set, ent, "s.apos", {
 		trType = (KNIFE_SPIN > 0) and knife.TR_LINEAR or TR_STATIONARY,
 		trTime = levelTime, trBase = angles, trDelta = { KNIFE_SPIN, 0, 0 },
 	})
 	pcall(et.gentity_set, ent, "r.currentOrigin", muzzle)
-	if type(et.trap_LinkEntity) == "function" then pcall(et.trap_LinkEntity, ent) end
+	if type(et.trap_LinkEntity) == "function" then
+		knife.stage("trap_LinkEntity ent " .. ent)
+		pcall(et.trap_LinkEntity, ent)
+	end
 
 	knives[ent] = {
 		owner   = num,
@@ -1233,12 +1302,15 @@ function knife.hit_player(ent, k, victim, hitpos)
 		dmg = THROW_DAMAGE_HEAD
 	end
 	-- et.G_Damage(target, inflictor, attacker, damage, dflags, mod)
+	knife.stage("G_Damage victim=" .. victim .. " attacker=" .. k.owner
+		.. " dmg=" .. dmg .. " mod=" .. tostring(knife.MODS[k.weapon] or MOD_KNIFE))
 	pcall(et.G_Damage, victim, k.owner, k.owner, dmg, 0, knife.MODS[k.weapon] or MOD_KNIFE)
 end
 
 function knife.land(ent, k, pos, levelTime)
 	-- stick the knife in whatever stopped it, pointing along the velocity it
 	-- had on impact (BG_EvaluateTrajectoryDelta() for TR_GRAVITY)
+	knife.stage("land ent " .. ent .. ": freeze trajectory")
 	local dt = (levelTime - k.time0) * 0.001
 	local angles = knife.angles_of({ k.delta[1], k.delta[2], k.delta[3] - knife.GRAVITY * dt })
 	k.landed  = levelTime
@@ -1291,6 +1363,7 @@ end
 -- move and re-link.
 function knife.fly(ent, k, levelTime)
 	local pos = knife.position(k, levelTime)
+	knife.stage("fly ent " .. ent .. " t=" .. levelTime .. ": trap_Trace")
 	-- G_Damage() refuses a same-team target unless the server turned
 	-- g_friendlyFire on (g_combat.c:1627), so hitting a friendly would spend
 	-- the knife for nothing and make throwing it in a group useless. A trace
@@ -1322,6 +1395,7 @@ function knife.fly(ent, k, levelTime)
 	end
 
 	k.last = { pos[1], pos[2], pos[3] }
+	knife.stage("fly ent " .. ent .. ": r.currentOrigin + relink")
 	pcall(et.gentity_set, ent, "r.currentOrigin", pos)
 	if type(et.trap_LinkEntity) == "function" then pcall(et.trap_LinkEntity, ent) end
 end
@@ -1495,6 +1569,7 @@ local function on_game_frame(levelTime)
 
 	-- throwable knife flight / pickup
 	if KNIFE_ENABLE then
+		knife.debugging = knife.debug_on()
 		local ok, err = pcall(function()
 			for ent, k in pairs(knives) do
 				local ok2, inuse = pcall(et.gentity_get, ent, "inuse")
@@ -1725,6 +1800,11 @@ local function on_weapon_fire(clientId, weapon)
 	-- throwable knife
 	if KNIFE_ENABLE and KNIVES[weapon] then
 		local intercepted = 0
+		knife.debugging = knife.debug_on()
+		if knife.debugging then
+			knife.stage("et_WeaponFire client=" .. clientId .. " weapon=" .. weapon
+				.. " clip=" .. tostring(knife.clip(clientId, weapon)))
+		end
 		local ok, res = pcall(function()
 			if not (team_of(clientId) and is_alive(clientId)) then return 0 end
 			local now = now_ms()

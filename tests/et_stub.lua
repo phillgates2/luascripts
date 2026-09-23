@@ -333,6 +333,7 @@ function stub.new(opts)
 	engine.commands = {}
 	engine.consoles = {}
 	engine.damage = {}
+	engine.diag = {}          -- G_LogPrint() lines: console + games.log bracket
 	engine.ents = {}          -- [entnum] = { client = ..., inuse = ..., ... }
 	engine.next_ent = MAX_CLIENTS
 	engine.world = {}         -- solid level geometry trap_Trace can hit
@@ -343,6 +344,8 @@ function stub.new(opts)
 	engine.models = {}        -- G_ModelIndex() names, in allocation order
 	engine.model_indexes = {} -- [name] = CS_MODELS index
 	engine.time = 1000
+	engine.free_entities = nil   -- G_EntitiesFree() answer; nil = healthy pool
+	engine.create_override = nil -- when set, G_CreateEntity() answers this raw number
 	engine.cvars = {
 		sv_maxclients = tostring(opts.sv_maxclients or 16),
 		g_gameplay = "1",
@@ -545,6 +548,16 @@ function stub.new(opts)
 		gentity_set = gentity_set,
 
 		G_Print = function(msg) engine.log[#engine.log + 1] = tostring(msg) end,
+		-- G_LogPrintf() reaches both the console and games.log, so the knife's
+		-- crash-bracket stage lines survive a hard server death
+		G_LogPrint = function(msg)
+			msg = tostring(msg)
+			engine.log[#engine.log + 1] = msg
+			engine.diag[#engine.diag + 1] = msg
+		end,
+		G_EntitiesFree = function()
+			return engine.free_entities or 512
+		end,
 		G_SoundIndex = function() return 1 end,
 		trap_Cvar_Get = function(name) return engine.cvars[name] or "" end,
 		trap_Cvar_Set = function(name, value) engine.cvars[name] = tostring(value) end,
@@ -665,6 +678,14 @@ function stub.new(opts)
 		-- expose is G_CreateEntity(spawnvars) -> entnum, which runs the string
 		-- through G_SpawnGEntityFromSpawnVars().
 		G_CreateEntity = function(params)
+			-- test hook: hand back a raw (possibly insane) number, as a broken
+			-- or future engine build could, so the module's entity-number
+			-- validation can be exercised
+			if engine.create_override then
+				local n = engine.create_override
+				engine.create_override = nil
+				return n
+			end
 			local vars = stub.parse_spawnvars(params)
 			-- G_Spawn() starts at MAX_CLIENTS: the first slots are the players
 			local num

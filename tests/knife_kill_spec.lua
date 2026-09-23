@@ -730,3 +730,92 @@ if #failures > 0 then
 end
 print(("%d checks passed"):format(checks))
 os.exit(0)
+
+
+-- ====================== crash bracketing / spawn guards ===================
+--
+-- "server crash with throw knife": the throw dies silently and instantly,
+-- which is a native (C) crash - pcall() cannot catch those, so the module
+-- brackets every engine call on the path (g_knifeDebug 1) and keeps the two
+-- reachable server-killers out of reach: G_Spawn()'s "no free entities"
+-- G_Error via an entity-pool guard, and the un-ranged g_entities + n reads in
+-- the C glue via an entity-number check on G_CreateEntity's answer.
+local KNIFE_MIN_FREE = 8   -- KNIFE_MIN_FREE_ENTITIES from game/gameplay.lua
+
+test("g_knifeDebug off: the throw path stays silent", function()
+	local engine, events = new_server({ sv_maxclients = 16 })
+	player(engine, events, 3, TEAM_AXIS, PC_SOLDIER, { 0, 0, 0 })
+
+	throw(engine, events, 3, WP_KNIFE, 1000)
+
+	check(#engine.diag == 0, "no G_LogPrint stage lines without g_knifeDebug")
+	local knifed = 0
+	for _, line in ipairs(engine.log) do
+		if line:find("knife:", 1, true) then knifed = knifed + 1 end
+	end
+	check(knifed == 0, "and no knife stage lines in the console log either")
+end)
+
+test("g_knifeDebug 1: every engine call on the throw is bracketed", function()
+	local engine, events = new_server({ sv_maxclients = 16 })
+	player(engine, events, 3, TEAM_AXIS, PC_SOLDIER, { 0, 0, 0 })
+	engine.cvars.g_knifeDebug = "1"
+
+	local ret, ent = throw(engine, events, 3, WP_KNIFE, 1000)
+
+	check(ret == 1 and ent, "the throw still works with the trace on")
+	local joined = table.concat(engine.diag, "\n")
+	check(joined:find("G_EntitiesFree", 1, true) ~= nil,
+		"the entity-pool check is bracketed")
+	check(joined:find("G_CreateEntity(", 1, true) ~= nil,
+		"G_CreateEntity is announced before it runs")
+	check(joined:find("trap_LinkEntity", 1, true) ~= nil,
+		"the relink is bracketed")
+	-- the bracket is ordered: the announcement of a call precedes its result
+	local call_at, result_at
+	for i, line in ipairs(engine.diag) do
+		if not call_at and line:find("G_CreateEntity(", 1, true) then call_at = i end
+		if call_at and not result_at and line:find("G_CreateEntity ->", 1, true) then
+			result_at = i
+		end
+	end
+	check(call_at and result_at and call_at < result_at,
+		"each call is announced before its answer is logged")
+end)
+
+test("an empty entity pool refuses the throw instead of G_Error-ing the server", function()
+	local engine, events = new_server({ sv_maxclients = 16 })
+	local p = player(engine, events, 3, TEAM_AXIS, PC_SOLDIER, { 0, 0, 0 })
+
+	engine.free_entities = KNIFE_MIN_FREE - 1  -- below the guard
+	local ret, ent = throw(engine, events, 3, WP_KNIFE, 1000)
+
+	check(ret == 0, "the fire event is passed through (the melee stab runs)")
+	check(ent == nil, "no entity was created")
+	check(p.ps.ammoclip[WP_KNIFE] == KNIFE_CLIP_MAX,
+		"the clip was not spent on the refused throw")
+	-- the pool recovers, the very next throw works again
+	engine.free_entities = nil
+	local ret2, ent2 = throw(engine, events, 3, WP_KNIFE, 1200)
+	check(ret2 == 1 and ent2, "and the next throw with a healthy pool spawns")
+end)
+
+test("an insane entity number from G_CreateEntity is refused before any field access", function()
+	local engine, events = new_server({ sv_maxclients = 16 })
+	local p = player(engine, events, 3, TEAM_AXIS, PC_SOLDIER, { 0, 0, 0 })
+
+	-- _et_gentity_get/set, _et_G_FreeEntity and _et_trap_LinkEntity all do
+	-- "g_entities + n" with no range check in the C glue: touching 5000 here
+	-- would be a segfault, not a Lua error
+	engine.create_override = 5000
+	local ret2, ent = throw(engine, events, 3, WP_KNIFE, 1000)
+
+	check(ret2 == 0 and ent == nil, "the out-of-range entity is never used")
+	check(p.ps.ammoclip[WP_KNIFE] == KNIFE_CLIP_MAX, "the clip was not spent")
+	check(#engine.link_log == 0, "no trap_LinkEntity ever saw the bad slot")
+	engine.cvars.g_knifeDebug = "1"
+	engine.create_override = -1
+	local ret3 = events.trigger("onWeaponFire", 3, WP_KNIFE)
+	check(ret3 == 0, "a negative entity number is refused the same way")
+	check(#engine.link_log == 0, "and no trap_LinkEntity for it either")
+end)
