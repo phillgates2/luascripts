@@ -203,6 +203,52 @@ end
 
 -- no callbacks defined for these things, so had to invent some special regexes
 -- note for etlegacy team: please take a look at this, might come in handy :-)
+-- The engine calls this while the map's entity definition is parsed
+-- (G_SpawnEntitiesFromString, g_spawn.c): level.spawning is still qtrue, which
+-- makes it the ONLY moment et.G_CreateEntity() is legal - at any other time
+-- G_SpawnGEntityFromSpawnVars() hits G_SpawnString()'s "called while not
+-- spawning" G_Error and takes the whole server down (CRASH-REPORT.md).
+--
+-- This is also the engine's FIRST Lua callback: the modules - and the event
+-- bus with them - only load in et_InitGame(), which the engine fires after
+-- the map ents are done. So the throwable-knife entity reserve is built here,
+-- directly, and handed to game/gameplay.lua through the wolfa_knife_reserve
+-- global; gameplay adopts and re-verifies it in onGameInit. Keep this
+-- dependency-free on purpose.
+function et_SpawnEntitiesFromString()
+    wolfa_knife_reserve = nil
+    if type(et.G_CreateEntity) ~= "function" then return end
+
+    local KNIFE_MAX_LIVE          = 12   -- keep in step with game/gameplay.lua
+    local KNIFE_MIN_FREE_ENTITIES = 8
+    local parked = "0 0 -4096"           -- knife.PARKED in game/gameplay.lua
+
+    -- G_Spawn() G_Errors on an empty pool even at map load: never build the
+    -- reserve down past the safety margin
+    local needed = KNIFE_MAX_LIVE
+    local ok, free = pcall(et.G_EntitiesFree)
+    if ok and type(free) == "number" then
+        needed = math.min(needed, math.max(0, free - KNIFE_MIN_FREE_ENTITIES))
+    end
+
+    local reserve = {}
+    for _ = 1, needed do
+        local okc, ent = pcall(et.G_CreateEntity,
+            'classname target_position origin "' .. parked .. '"')
+        if not okc or type(ent) ~= "number" then break end
+        -- the C glue does g_entities + n raw: never keep a number outside
+        -- the array (slots below MAX_CLIENTS are the players')
+        if ent < (et.MAX_CLIENTS or 64) or ent >= (et.MAX_GENTITIES or 1024) then break end
+        -- G_SpawnGEntityFromSpawnVars() frees the entity again when the
+        -- classname has no spawn function: verify the slot is really ours
+        local oki, inuse = pcall(et.gentity_get, ent, "inuse")
+        if not oki or inuse ~= 1 then break end
+        pcall(et.trap_UnlinkEntity, ent)   -- G_Lua_CreateEntity linked it
+        reserve[#reserve + 1] = ent
+    end
+    wolfa_knife_reserve = reserve
+end
+
 function et_Print(consoleText)
     local result, poll
 

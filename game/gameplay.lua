@@ -107,14 +107,19 @@ local KNIFE_PICKUP_RANGE    = 48
 local KNIFE_HEAD_HEIGHT     = 38
 local KNIFE_MODEL           = true  -- draw it with the knife's own world model
 local KNIFE_SPIN            = 720   -- degrees/second of tumble (0 = no spin)
-local KNIFE_MAX_LIVE        = 12    -- cap on knives in the world (entity slots)
+local KNIFE_MAX_LIVE        = 12    -- knife entities reserved at map load
 local KNIFE_SPAWN_CLASS     = "target_position"
--- G_Spawn() - reached through et.G_CreateEntity() - answers an empty entity
--- pool with G_Error("G_Spawn: no free entities"), and G_Error takes the whole
--- server down. Before a throw the spawn is refused while fewer than this many
--- entity slots remain free, so a starved map or mod can never reach that line
--- through this feature (the refused throw falls through to the normal melee
--- stab and costs nothing).
+-- The knife entities are created ONCE per map, inside the engine's
+-- et_SpawnEntitiesFromString() callback, and re-used from then on. The reason
+-- is the crash from CRASH-REPORT.md: et.G_CreateEntity() feeds the spawn vars
+-- through G_SpawnGEntityFromSpawnVars(), which calls G_SpawnString() - and
+-- G_SpawnString() answers G_Error("G_SpawnString() called while not spawning")
+-- at any time other than map load. G_Error shuts the whole server down, so a
+-- runtime G_CreateEntity() is a guaranteed kill on current ET:Legacy (g_spawn.c
+-- "notteam"/"allowteams" checks). While the pool is built, this many entity
+-- slots are kept back for the rest of the level: G_Spawn() G_Errors on an
+-- empty pool even at map load, so the pool is never built down past this
+-- margin.
 local KNIFE_MIN_FREE_ENTITIES = 8
 -- Set "g_knifeDebug 1" to announce every engine call on the knife's throw and
 -- flight path to the console and games.log BEFORE it runs. A native crash
@@ -1056,6 +1061,9 @@ knife.MODS = {
 	[WP_KNIFE_KABAR] = (et and et.MOD_KNIFE_KABAR) or MOD_KNIFE,
 }
 knife.index = {}            -- [weapon] = modelindex, precached once per map
+knife.PARKED = { 0, 0, -4096 } -- where a reserved knife waits, unlinked
+knife.pool    = {}             -- reserved entity numbers, in reservation order
+knife.reserve = {}             -- [ent] = { free = bool, dead = bool }
 
 -- --- crash bracketing (g_knifeDebug 1) -------------------------------------
 -- Whether the stage trace is on; refreshed once per frame and once per throw,
@@ -1125,28 +1133,21 @@ function knife.add(num, weapon)
 	return true
 end
 
-function knife.free(ent)
-	knife.stage("G_FreeEntity ent " .. tostring(ent))
+-- Returning a knife to the reserve. The engine slot is never freed while the
+-- map runs - it is unlinked, parked out of sight, and handed out again by the
+-- next throw. Nothing a client saw survives: the next knife.spawn() rewrites
+-- every field before the entity is linked again.
+function knife.release(ent)
+	knife.stage("release ent " .. tostring(ent) .. " back into the reserve")
 	knives[ent] = nil
-	if type(et.G_FreeEntity) == "function" then pcall(et.G_FreeEntity, ent) end
-end
-
--- G_Spawn() calls G_Error() - which takes the whole server down - when the
--- entity pool runs out, so the number of knives in the world is capped and the
--- oldest one is freed to make room.
-function knife.prune()
-	local live = 0
-	for _ in pairs(knives) do live = live + 1 end
-	while live >= KNIFE_MAX_LIVE do
-		local oldest, oldest_ent
-		for ent, k in pairs(knives) do
-			if not oldest or (k.spawned or 0) < oldest then
-				oldest, oldest_ent = k.spawned or 0, ent
-			end
+	local r = knife.reserve[ent]
+	if r and not r.dead then
+		r.free = true
+		pcall(et.gentity_set, ent, "s.modelindex", 0)
+		pcall(et.gentity_set, ent, "r.currentOrigin", knife.PARKED)
+		if type(et.trap_UnlinkEntity) == "function" then
+			pcall(et.trap_UnlinkEntity, ent)
 		end
-		if not oldest_ent then return end
-		knife.free(oldest_ent)
-		live = live - 1
 	end
 end
 
@@ -1166,35 +1167,97 @@ function knife.register_models()
 	end
 end
 
-function knife.create(origin)
-	if type(et.G_CreateEntity) ~= "function" then return nil end
-	local vars = string.format('classname %s origin "%.1f %.1f %.1f"',
-		KNIFE_SPAWN_CLASS, origin[1], origin[2], origin[3])
-	knife.stage('G_CreateEntity("' .. vars .. '")')
-	local ok, ent = pcall(et.G_CreateEntity, vars)
-	knife.stage("G_CreateEntity -> ok=" .. tostring(ok) .. " ent=" .. tostring(ent))
-	if not ok then
-		err_once("knife_create", ent)
-		return nil
+-- The reserve is created by main.lua's et_SpawnEntitiesFromString() - the
+-- engine's FIRST callback, fired while the map's entity definition is parsed.
+-- That window is the ONE moment entity spawning is allowed: at any other time
+-- G_SpawnGEntityFromSpawnVars() (which is what et.G_CreateEntity() runs) calls
+-- G_SpawnString("allowteams"), and G_SpawnString() answers
+-- G_Error("G_SpawnString() called while not spawning") whenever
+-- level.spawning is false - which shuts the whole server down. That is the
+-- crash from CRASH-REPORT.md, and no Lua-level guard can catch a G_Error.
+--
+-- et_SpawnEntitiesFromString() also runs BEFORE et_InitGame(), so the modules
+-- - and the event bus with them - do not exist yet while it runs. main.lua
+-- therefore builds the reserve itself and hands it over in the
+-- wolfa_knife_reserve global; this adopts it, re-verifying every slot (the
+-- engine handed the numbers out moments ago, and a map script may already
+-- have freed some), and the slots are re-used by knife.acquire() for the rest
+-- of the map.
+function knife.build_pool()
+	knife.pool    = {}
+	knife.reserve = {}
+	if not KNIFE_ENABLE then return end
+	if not is_gameplay_enabled() then return end
+	knife.debugging = knife.debug_on()
+
+	local reserve = wolfa_knife_reserve
+	wolfa_knife_reserve = nil
+	if type(reserve) ~= "table" then
+		if type(et.G_CreateEntity) == "function" then
+			log("WARNING: no knife reserve was built at map load"
+				.. " (et_SpawnEntitiesFromString missing or failed)"
+				.. " - throwing knives are disabled this map")
+		end
+		return
 	end
-	if type(ent) ~= "number" then return nil end
-	-- The C glue never range-checks the entity number: _et_gentity_get/set,
-	-- _et_G_FreeEntity and _et_trap_LinkEntity all do "g_entities + n" raw, so
-	-- a number outside the array is not a Lua error - it is a segfault on the
-	-- very next field access. Entity slots below MAX_CLIENTS are the players'.
-	if ent < MAX_CLIENTS or ent >= MAX_ENTITIES then
-		err_once("knife_create_range", "entity number " .. tostring(ent)
-			.. " outside g_entities[" .. MAX_CLIENTS .. ".." .. (MAX_ENTITIES - 1) .. "]")
-		return nil
+
+	for i = 1, #reserve do
+		local ent = reserve[i]
+		if type(ent) ~= "number" then break end
+		-- The C glue never range-checks the entity number: _et_gentity_get/set,
+		-- _et_G_FreeEntity and _et_trap_LinkEntity all do "g_entities + n" raw,
+		-- so a number outside the array is not a Lua error - it is a segfault
+		-- on the very next field access. Entity slots below MAX_CLIENTS are
+		-- the players'.
+		if ent < MAX_CLIENTS or ent >= MAX_ENTITIES then
+			err_once("knife_pool_range", "entity number " .. tostring(ent)
+				.. " outside g_entities[" .. MAX_CLIENTS .. ".." .. (MAX_ENTITIES - 1) .. "]")
+			break
+		end
+		-- G_SpawnGEntityFromSpawnVars() frees the entity again when the
+		-- classname has no spawn function; never reserve a slot the engine
+		-- has already given up
+		local ok2, inuse = pcall(et.gentity_get, ent, "inuse")
+		knife.stage("adopt reserve ent " .. ent .. ": inuse ok=" .. tostring(ok2)
+			.. " inuse=" .. tostring(inuse))
+		if not ok2 or inuse ~= 1 then break end
+		knife.pool[#knife.pool + 1] = ent
+		knife.reserve[ent] = { free = true }
 	end
-	-- G_SpawnGEntityFromSpawnVars() frees the entity again when it cannot call
-	-- a spawn function for the classname; never track a slot the engine has
-	-- already given up, or the next knife.free() would free somebody else's
-	local ok2, inuse = pcall(et.gentity_get, ent, "inuse")
-	knife.stage("gentity_get(ent " .. ent .. ", inuse) -> ok=" .. tostring(ok2)
-		.. " inuse=" .. tostring(inuse))
-	if not ok2 or inuse ~= 1 then return nil end
-	return ent
+	if #knife.pool == 0 then
+		log("knife reserve is empty - throwing knives are disabled this map")
+	else
+		log("knife reserve: " .. #knife.pool .. " of " .. KNIFE_MAX_LIVE .. " entities")
+	end
+end
+
+-- Take a parked knife out of the reserve. The slot is re-checked before it is
+-- handed out: a map script or the engine may have given it away, and touching
+-- a slot we no longer own is how entity numbers become somebody else's
+-- entities.
+function knife.acquire()
+	for i = 1, #knife.pool do
+		local ent = knife.pool[i]
+		local r   = knife.reserve[ent]
+		if r and r.free and not r.dead then
+			local ours = false
+			local ok, inuse = pcall(et.gentity_get, ent, "inuse")
+			if ok and inuse == 1 then
+				local ok2, cls = pcall(et.gentity_get, ent, "classname")
+				ours = ok2 and cls == KNIFE_SPAWN_CLASS
+			end
+			if ours then
+				r.free = false
+				knife.stage("acquire pooled ent " .. ent)
+				return ent
+			end
+			-- gone: the engine handed the number out again, so this slot is
+			-- never ours again - shrink the reserve instead of touching it
+			knife.stage("reserve ent " .. tostring(ent) .. " was taken over - dropped")
+			r.dead = true
+		end
+	end
+	return nil
 end
 
 -- angles that point a model's forward axis along `dir` (vectoangles() in
@@ -1233,21 +1296,11 @@ function knife.spawn(num, weapon, levelTime)
 	local delta  = { f[1]*THROW_SPEED, f[2]*THROW_SPEED, f[3]*THROW_SPEED + THROW_UP }
 	local angles = knife.angles_of(delta)
 
-	knife.prune()
-	-- G_Spawn(), reached through G_CreateEntity(), answers a full entity pool
-	-- with G_Error("G_Spawn: no free entities") - an engine abort that shuts
-	-- the whole server down, with nothing Lua can catch. Keep this feature
-	-- away from that line entirely: refuse the throw while the pool is nearly
-	-- dry. A refused throw spends no clip and sets no cooldown, so the engine
-	-- falls through to the normal melee stab.
-	if type(et.G_EntitiesFree) == "function" then
-		local ok, free = pcall(et.G_EntitiesFree)
-		knife.stage("G_EntitiesFree -> ok=" .. tostring(ok) .. " free=" .. tostring(free))
-		if ok and type(free) == "number" and free < KNIFE_MIN_FREE_ENTITIES then
-			return nil
-		end
-	end
-	local ent = knife.create(muzzle)
+	-- et.G_CreateEntity() cannot be used at runtime (see knife.build_pool):
+	-- the throw takes the next parked knife from the reserve instead. An empty
+	-- reserve refuses the throw, which costs no clip and sets no cooldown, so
+	-- the engine falls through to the normal melee stab.
+	local ent = knife.acquire()
 	if not ent then return nil end
 	knife.stage("spawn ent " .. ent .. ": s.eType/s.modelindex/owner/box")
 
@@ -1382,7 +1435,7 @@ function knife.fly(ent, k, levelTime)
 		local hit = tr.entityNum
 		if knife.is_target(hit, k) then
 			knife.hit_player(ent, k, hit, tr.endpos or pos)
-			knife.free(ent)
+			knife.release(ent)
 			return
 		end
 		if knife.pass_through(hit, k) then
@@ -1402,7 +1455,7 @@ end
 
 function knife.pickup(ent, k, levelTime)
 	if levelTime - (k.landed or levelTime) >= KNIFE_LIFETIME_MS then
-		knife.free(ent)
+		knife.release(ent)
 		return
 	end
 	local pos = k.resting
@@ -1413,7 +1466,7 @@ function knife.pickup(ent, k, levelTime)
 			local o = client_get(c, "ps.origin")
 			if o and dist2(o, pos) <= range_sq then
 				if knife.add(c, k.weapon) then
-					knife.free(ent)
+					knife.release(ent)
 					return
 				end
 			end
@@ -1585,7 +1638,7 @@ local function on_game_frame(levelTime)
 					knife.pickup(ent, k, levelTime)
 				elseif levelTime - (k.spawned or levelTime) >= KNIFE_LIFETIME_MS then
 					-- flew out of the world without ever hitting anything
-					knife.free(ent)
+					knife.release(ent)
 				else
 					knife.fly(ent, k, levelTime)
 				end
@@ -1854,7 +1907,11 @@ local function on_game_init(levelTime, randomSeed, isRestart)
 		if ok and idx and idx ~= 0 then kick_sound_index = idx end
 	end
 
-	if KNIFE_ENABLE then knife.register_models() end
+	if KNIFE_ENABLE then
+		knife.register_models()
+		local ok, err = pcall(knife.build_pool)
+		if not ok then err_once("knife_pool_build", err) end
+	end
 
 	log("loaded (client slots: " .. get_client_slots() .. ")")
 	local feats = {}
@@ -1872,7 +1929,8 @@ local function on_game_init(levelTime, randomSeed, isRestart)
 		log("WARNING: et.AddWeaponToPlayer missing - some features will not work")
 	end
 	-- et.G_Spawn() does not exist in ET:Legacy's Lua API (the etlib[] table in
-	-- g_lua.c); entities come from et.G_CreateEntity("<spawn vars>")
+	-- g_lua.c); entities come from et.G_CreateEntity("<spawn vars>") - and only
+	-- during et_SpawnEntitiesFromString(), where main.lua builds the reserve
 	if type(et.G_CreateEntity) ~= "function" then
 		log("WARNING: et.G_CreateEntity missing - throwable knife disabled")
 	end
