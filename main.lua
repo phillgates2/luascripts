@@ -137,6 +137,8 @@ function et_InitGame(levelTime, randomSeed, restartMap)
     commands = wolfa_requireModule("commands.commands")
 
     bots = wolfa_requireModule("game.bots")
+    botvote = wolfa_requireModule("game.botvote")
+    doublejump = wolfa_requireModule("game.doublejump")
     game = wolfa_requireModule("game.game")
     gameplay = wolfa_requireModule("game.gameplay")
     honors = wolfa_requireModule("game.honors")

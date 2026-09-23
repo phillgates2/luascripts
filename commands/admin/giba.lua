@@ -35,10 +35,9 @@ function commandGibAll(clientId, command)
             local team = et.gentity_get(i, "sess.sessionTeam")
 
             if (team == constants.TEAM_AXIS or team == constants.TEAM_ALLIES) and et.gentity_get(i, "health") > 0 then
-                -- GENTITYNUM_BITS    10                      10
-                -- MAX_GENTITIES      1 << GENTITYNUM_BITS    1024
-                -- ENTITYNUM_WORLD    MAX_GENTITIES - 2       18
-                et.G_Damage(i, 0, 1024, 500, 0, 0) -- MOD_UNKNOWN = 0
+                -- ENTITYNUM_NONE as the attacker, and inside the range
+                -- g_entities actually has (GAMEPLAY-FIX.md 9.4)
+                et.G_Damage(i, 0, constants.ENTITYNUM_NONE, 500, 0, 0) -- MOD_UNKNOWN = 0
 
                 count = count + 1
             end

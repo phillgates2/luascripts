@@ -29,6 +29,7 @@ local players = wolfa_requireModule("players.players")
 
 local constants = wolfa_requireModule("util.constants")
 local settings = wolfa_requireModule("util.settings")
+local timers = wolfa_requireModule("util.timers")
 
 -- the etoz mod keeps a firegod burning for 1,800,000 ms (thirty minutes)
 local FIREGOD_TIME = 1800000
@@ -82,7 +83,11 @@ function commandFiregod(clientId, command, victim, ...)
 
     local args = {...}
     local noclip = #args > 0 and not string.find(string.lower(args[1]), "^no?$") and not string.find(string.lower(args[1]), "^off$")
-    local now = et.trap_Milliseconds()
+
+    -- the engine compares s.onFireStart/s.onFireEnd against level.time in its
+    -- burn loop (g_active.c:196-206), so both stamps come from the level clock
+    -- rather than from et.trap_Milliseconds(); see GAMEPLAY-FIX.md 9.1.
+    local now = timers.getLevelTime()
 
     -- a firegod takes no damage at all; the engine resets takedamage to
     -- true on respawn, which doubles as the toggle state

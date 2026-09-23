@@ -42,9 +42,9 @@ function commandThrowAll(clientId, command)
                     velocityY = (math.random() - 0.5) * 600
                 end
 
-                et.gentity_set(i, "ps.velocity", 0, velocityX)
-                et.gentity_set(i, "ps.velocity", 1, velocityY)
-                et.gentity_set(i, "ps.velocity", 2, command == "launcha" and 1200 or 900)
+                -- FIELD_VEC3: one table with the keys 1..3, not three calls
+                -- with a component index (GAMEPLAY-FIX.md 9.2)
+                et.gentity_set(i, "ps.velocity", { velocityX, velocityY, command == "launcha" and 1200 or 900 })
 
                 count = count + 1
             end

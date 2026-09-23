@@ -31,7 +31,7 @@ local timers = wolfa_requireModule("util.timers")
 local function grenadeExplode(cmdClient)
     if players.isConnected(cmdClient) then
         -- MOD_GRENADE = 4
-        et.G_Damage(cmdClient, 0, 1024, 200, 0, 4)
+        et.G_Damage(cmdClient, 0, constants.ENTITYNUM_NONE, 200, 0, 4)
 
         et.trap_SendConsoleCommand(et.EXEC_APPEND, "playsound "..cmdClient.." \"sound/weapons/grenade/grenExpl.wav\";")
     end

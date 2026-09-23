@@ -16,9 +16,11 @@
 -- along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 -- !freeze and !unfreeze, as known from the etpub, NoQuarter and silEnT
--- mods. Frozen players cannot move until they are unfrozen. The mods
--- freeze players in the game code, WolfAdmin does this by resetting the
--- velocity of frozen players at a small interval.
+-- mods. Frozen players cannot move until they are unfrozen: WolfAdmin sets the
+-- engine's own client.freezed flag, which ClientThink() turns into
+-- ps.pm_type = PM_FREEZE (g_active.c:1380), and keeps resetting the velocity of
+-- frozen players at a small interval so any momentum they were already carrying
+-- - a throw, a launch, knockback - dies away too.
 
 local auth = wolfa_requireModule("auth.auth")
 
@@ -39,12 +41,21 @@ local function freezeTick()
 
     for clientId, _ in pairs(frozenClients) do
         if players.isConnected(clientId) then
-            et.gentity_set(clientId, "ps.velocity", 0, 0)
-            et.gentity_set(clientId, "ps.velocity", 1, 0)
-            et.gentity_set(clientId, "ps.velocity", 2, 0)
+            -- ps.velocity is FIELD_VEC3: the engine's setter indexes its value
+            -- as a table with the keys 1..3 (_etH_gentity_setvec3 in g_lua.c).
+            -- The per-component form used here before made et.gentity_set()
+            -- raise "attempt to index a number value" on every one of these
+            -- 100 ms ticks, so !freeze never cancelled any momentum at all
+            -- (GAMEPLAY-FIX.md 9.2).
+            et.gentity_set(clientId, "ps.velocity", { 0, 0, 0 })
 
             count = count + 1
         else
+            -- the engine does not clear client.freezed when a client respawns
+            -- into the slot (g_active.c:1380 is the only reader), so drop it
+            -- here or whoever connects next would start the match frozen
+            pcall(et.gentity_set, clientId, "freezed", 0)
+
             frozenClients[clientId] = nil
         end
     end
@@ -79,6 +90,14 @@ local function freezeApply(clientId, command, cmdClient, reason, isSilent)
     if command == "freeze" then
         frozenClients[cmdClient] = true
 
+        -- the engine's own freeze flag: ClientThink() turns client.freezed into
+        -- ps.pm_type = PM_FREEZE, "stuck in place with no control"
+        -- (g_active.c:1380, bg_public.h:495). This is what actually holds the
+        -- player still; the velocity reset in freezeTick() only cancels the
+        -- momentum they already had. It is pcalled because an engine without
+        -- the field raises, and the velocity reset still applies there.
+        pcall(et.gentity_set, cmdClient, "freezed", 1)
+
         if not freezeTimer then
             freezeTimer = timers.add(freezeTick, 100, 0)
         end
@@ -93,6 +112,8 @@ local function freezeApply(clientId, command, cmdClient, reason, isSilent)
     else
         if frozenClients[cmdClient] then
             frozenClients[cmdClient] = nil
+
+            pcall(et.gentity_set, cmdClient, "freezed", 0)
 
             if not isSilent then
                 et.trap_SendConsoleCommand(et.EXEC_APPEND, "cchat -1 \"^dunfreeze: ^7"..players.getName(cmdClient).." ^9has been unfrozen.\";")
@@ -174,7 +195,13 @@ function commandFreeze(clientId, command, victim, ...)
 end
 
 function commandFreezeOnClientDisconnect(clientId)
-    frozenClients[clientId] = nil
+    if frozenClients[clientId] then
+        frozenClients[clientId] = nil
+
+        -- client.freezed survives on the slot: ClientSpawn() never clears it, so
+        -- whoever connects into this slot next would start the match frozen
+        pcall(et.gentity_set, clientId, "freezed", 0)
+    end
 end
 events.handle("onClientDisconnect", commandFreezeOnClientDisconnect)
 
