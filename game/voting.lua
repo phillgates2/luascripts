@@ -17,6 +17,8 @@
 
 local auth = wolfa_requireModule("auth.auth")
 
+local botvote = wolfa_requireModule("game.botvote")
+
 local constants = wolfa_requireModule("util.constants")
 local events = wolfa_requireModule("util.events")
 local settings = wolfa_requireModule("util.settings")
@@ -98,61 +100,29 @@ function voting.onCallvote(clientId, type, args)
 end
 events.handle("onCallvote", voting.onCallvote)
 
+-- A poll is the only vote type the engine will carry for something it does not
+-- have in aVoteInfo[], so "callvote poll enable bots" is how a bot vote used to
+-- be called. What happened next never worked: this handler sent "needbots",
+-- "kickbots" and "putbots" to the console, and no engine implements any of them
+-- - g_svcmds.c's console table has a single bot entry, "bot", and that belongs
+-- to the omnibot interface (GAMEPLAY-FIX.md 11.2). game/botvote.lua owns the
+-- wording and the commands behind it now, and it also runs "callvote bots ..."
+-- as a vote of its own.
 function voting.onPollFinish(passed, poll)
-    if passed then
-        if poll == "enable bots" then
-            et.trap_SendConsoleCommand(et.EXEC_APPEND, "needbots")
-        elseif poll == "disable bots" then
-            et.trap_SendConsoleCommand(et.EXEC_APPEND, "kickbots")
-        elseif string.find(poll, "put bots") == 1 then
-            local team = string.sub(poll, 10)
-
-            if team == "axis" then
-                team = constants.TEAM_AXIS_SC
-            elseif team == "allies" then
-                team = constants.TEAM_ALLIES_SC
-            else
-                return
-            end
-
-            et.trap_SendConsoleCommand(et.EXEC_APPEND, "putbots "..team)
-        elseif string.find(poll, "set bot difficulty") == 1 then
-            local difficulty = string.sub(poll, 20)
-
-            if tonumber(difficulty) then
-                difficulty = tonumber(difficulty)
-            elseif difficulty == "uber" then
-                difficulty = 6
-            elseif difficulty == "professional" then
-                difficulty = 5
-            elseif difficulty == "standard" then
-                difficulty = 4
-            elseif difficulty == "easy frag" then
-                difficulty = 3
-            elseif difficulty == "poor" then
-                difficulty = 2
-            elseif difficulty == "very poor" then
-                difficulty = 1
-            elseif difficulty == "poorest" then
-                difficulty = 0
-            else
-                return
-            end
-
-            et.trap_SendConsoleCommand(et.EXEC_APPEND, "bot difficulty "..difficulty)
-        elseif string.find(poll, "set bot max") == 1 then
-            local amount = string.sub(poll, 13)
-
-            if tonumber(amount) then
-                amount = tonumber(amount)
-            else
-                return
-            end
-
-            et.trap_SendConsoleCommand(et.EXEC_APPEND, "bot maxbots "..amount)
-            et.trap_SendConsoleCommand(et.EXEC_APPEND, "cchat -1 \"^dmaxbots: ^9maximum set to ^7"..amount.." ^9bots.\";")
-        end
+    if not passed then
+        return
     end
+
+    local action, value = botvote.parse(poll)
+
+    if not action then
+        return
+    end
+
+    botvote.execute(action, value)
+
+    -- the engine has already announced the poll itself; say what it changed
+    et.trap_SendServerCommand(-1, "print \"^dbots^7: "..botvote.describe(action, value).."\n\"")
 end
 events.handle("onPollFinish", voting.onPollFinish)
 

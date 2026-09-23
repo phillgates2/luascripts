@@ -150,8 +150,16 @@ local CLIENT_FIELDS = {
 	["sess.latchPlayerWeapon"] = { "sess", "latchPlayerWeapon" },
 	["sess.latchPlayerWeapon2"] = { "sess", "latchPlayerWeapon2" },
 	["ps.stats"] = { "ps", "stats", array = true },
-	["ps.origin"] = { "ps", "origin" },
-	["ps.viewangles"] = { "ps", "viewangles" },
+	-- FIELD_VEC3 in g_lua.c: read and written as one table with the keys 1..3
+	["ps.origin"] = { "ps", "origin", vec3 = true },
+	["ps.viewangles"] = { "ps", "viewangles", vec3 = true },
+	["ps.velocity"] = { "ps", "velocity", vec3 = true },
+	-- movement state, all FIELD_INT and all FIELD_FLAG_READONLY
+	["ps.pm_flags"] = { "ps", "pm_flags" },
+	["ps.pm_type"] = { "ps", "pm_type" },
+	["ps.eFlags"] = { "ps", "eFlags" },
+	["freezed"] = { "freezed" },
+	["noclip"] = { "noclip" },
 	["ps.viewheight"] = { "ps", "viewheight" },
 	["ps.weapon"] = { "ps", "weapon" },
 	["ps.weaponstate"] = { "ps", "weaponstate" },
@@ -179,20 +187,28 @@ local CLIENT_FIELDS = {
 local GENTITY_FIELDS = {
 	["inuse"] = { "inuse" },
 	["classname"] = { "classname" },
-	["origin"] = { "origin" },
+	-- ent->health and ent->takedamage: FIELD_INT, both writable
+	["health"] = { "health" },
+	["takedamage"] = { "takedamage" },
+	["origin"] = { "origin", vec3 = true },
 	["s.eType"] = { "s", "eType" },
 	["s.weapon"] = { "s", "weapon" },
 	["s.pos"] = { "s", "pos" },
 	["r.ownerNum"] = { "r", "ownerNum" },
-	["r.currentOrigin"] = { "r", "currentOrigin" },
-	["r.mins"] = { "r", "mins" },
-	["r.maxs"] = { "r", "maxs" },
+	["r.currentOrigin"] = { "r", "currentOrigin", vec3 = true },
+	["r.mins"] = { "r", "mins", vec3 = true },
+	["r.maxs"] = { "r", "maxs", vec3 = true },
 	["r.contents"] = { "r", "contents" },
 	["r.linked"] = { "r", "linked" },
 	["s.number"] = { "s", "number" },
 	["s.modelindex"] = { "s", "modelindex" },
-	["s.angles"] = { "s", "angles" },
+	["s.angles"] = { "s", "angles", vec3 = true },
 	["s.apos"] = { "s", "apos" },
+	-- the burning window. The engine reads both back against level.time in its
+	-- flamethrower burn loop (g_active.c:196-206), which is why !burn and
+	-- !firegod have to stamp them from the level clock (GAMEPLAY-FIX.md 9.1).
+	["s.onFireStart"] = { "s", "onFireStart" },
+	["s.onFireEnd"] = { "s", "onFireEnd" },
 	["clipmask"] = { "clipmask" },
 }
 
@@ -206,6 +222,12 @@ local READONLY = {
 	["pers.connected"] = true,
 	["pers.netname"] = true,
 	["ps.viewheight"] = true,
+	["ps.origin"] = true,
+	["ps.viewangles"] = true,
+	["ps.pm_flags"] = true,
+	["ps.pm_type"] = true,
+	["ps.eFlags"] = true,
+	["noclip"] = true,
 	["ps.weapon"] = true,
 	["ps.weaponstate"] = true,
 	["s.weapon"] = true,
@@ -347,9 +369,12 @@ function stub.new(opts)
 			ps = {
 				weapon = 0, weaponstate = 0, stats = { [0] = 0 },
 				origin = { 0, 0, 0 }, viewangles = { 0, 0, 0 },
+				velocity = { 0, 0, 0 },
+				pm_flags = 0, pm_type = 0, eFlags = 0,
 				viewheight = DEFAULT_VIEWHEIGHT,
 				weapons = {}, ammo = {}, ammoclip = {}, powerups = {}, persistant = {},
 			},
+			freezed = 0, noclip = 0,
 		}
 	end
 
@@ -440,7 +465,23 @@ function stub.new(opts)
 			parent = parent[path[i]]
 		end
 		local key = path[#path]
-		if path.array then
+		if path.vec3 then
+			-- _etH_gentity_setvec3() indexes the value with the keys 1..3, so a
+			-- FIELD_VEC3 takes one table. Handing it a component index instead
+			-- makes the real engine raise "attempt to index a number value" -
+			-- the failure that left !freeze, !throw and !launch doing nothing
+			-- on a server (GAMEPLAY-FIX.md 9.2). The stub has to fail the same
+			-- way, or a spec cannot see it.
+			if type(val1) ~= "table" then
+				error("attempt to index a " .. type(val1) .. " value", 0)
+			end
+			parent[key] = { val1[1] or 0, val1[2] or 0, val1[3] or 0 }
+		elseif path.array then
+			-- FIELD_INT_ARRAY / FIELD_FLOAT_ARRAY: (index, value)
+			if type(val1) ~= "number" or type(val2) ~= "number" then
+				error("bad argument to gentity_set (number expected, got " ..
+					type(val1) .. ", " .. type(val2) .. ")", 0)
+			end
 			parent[key] = parent[key] or {}
 			parent[key][val1] = val2
 		else
@@ -600,7 +641,20 @@ function stub.new(opts)
 		end,
 		AddWeaponToPlayer = add_weapon,
 		RemoveWeaponFromPlayer = remove_weapon,
+		-- _et_G_Damage() does "g_entities + n" for all three entity numbers and
+		-- never checks the range, so a number outside g_entities[0..1023] makes
+		-- the engine read past the end of the array and hand G_Damage() whatever
+		-- the linker put there as the attacker. The stub raises instead of
+		-- guessing: staying quiet about it is how six admin commands came to send
+		-- 1024 for "nobody" (GAMEPLAY-FIX.md 9.4).
 		G_Damage = function(target, inflictor, attacker, damage, flags, mod)
+			for label, num in pairs({ target = target, inflictor = inflictor, attacker = attacker }) do
+				if type(num) ~= "number" or num < 0 or num >= MAX_GENTITIES then
+					error("G_Damage: " .. label .. " entity number " .. tostring(num) ..
+						" is outside g_entities[0.." .. (MAX_GENTITIES - 1) .. "]", 0)
+				end
+			end
+
 			engine.damage[#engine.damage + 1] =
 				{ target = target, attacker = attacker, damage = damage, mod = mod }
 		end,
@@ -693,6 +747,7 @@ function stub.new(opts)
 		e.client.ps.stats[0] = 100
 		e.inuse = 1                    -- ClientBegin() -> G_InitGentity()
 		e.classname = "clientslot"
+		e.health = 0
 		engine.class_of = engine.class_of or {}
 		engine.class_of[num] = { team = team, class = class, opts = opts2 }
 		return e
@@ -711,6 +766,7 @@ function stub.new(opts)
 		c.ps.ammo, c.ps.ammoclip, c.ps.weapons = {}, {}, {}
 		c.ps.weapon, c.ps.weaponstate = 0, 0
 		c.ps.stats[0] = 100
+		e.health, e.takedamage = 100, 1   -- ClientSpawn(): alive and damageable
 
 		local function give(entry, current)
 			add_weapon(num, entry[1], entry[2], entry[3], current and 1 or 0)
@@ -755,6 +811,9 @@ function stub.new(opts)
 		local c = engine.client(num)
 		assert(c, "client " .. tostring(num) .. " is not connected")
 		c.ps.stats[0] = value
+		-- G_Damage() keeps ent->health and ps.stats[STAT_HEALTH] in step, and
+		-- Lua reads the former for "health"
+		engine.ents[num].health = value
 		return c
 	end
 

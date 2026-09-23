@@ -65,10 +65,12 @@ function commandGib(clientId, command, victim)
         return true
     end
 
-    -- GENTITYNUM_BITS    10                      10
-    -- MAX_GENTITIES      1 << GENTITYNUM_BITS    1024
-    -- ENTITYNUM_WORLD    MAX_GENTITIES - 2       18
-    et.G_Damage(cmdClient, 0, 1024, 500, 0, 0) -- MOD_UNKNOWN = 0
+    -- ENTITYNUM_NONE as the attacker: a slot the engine never spawns into, so
+    -- G_Damage() finds no attacker client and no team check stands in the way of
+    -- an admin gibbing their own team (q_shared.h:1247, util/constants.lua).
+    -- The number has to be inside g_entities[0..1023]: _et_G_Damage() does
+    -- "g_entities + attacker" with no bounds check (GAMEPLAY-FIX.md 9.4).
+    et.G_Damage(cmdClient, 0, constants.ENTITYNUM_NONE, 500, 0, 0) -- MOD_UNKNOWN = 0
 
     et.trap_SendConsoleCommand(et.EXEC_APPEND, "cchat -1 \"^dgib: ^7"..players.getName(cmdClient).." ^9was gibbed.\";")
 

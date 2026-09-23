@@ -27,6 +27,20 @@ constants.MAX_LENGTH_CP = 56
 constants.MAX_LENGTH_CVAR = 254
 constants.MAX_LENGTH_CONSOLE = 255
 
+-- Entity numbers, q_shared.h:1239-1248. MAX_GENTITIES is 1 << GENTITYNUM_BITS,
+-- so the valid range is 0 to 1023, and ENTITYNUM_NONE is the last slot - the one
+-- the engine never spawns into, whose ->client is NULL.
+--
+-- Every number handed to et.G_Damage(), et.gentity_get() or et.gentity_set() has
+-- to be inside that range. _et_G_Damage() does "g_entities + attacker" with no
+-- bounds check at all, so 1024 points one gentity_t past the end of the array
+-- and G_Damage() then reads whatever the linker placed there - a crash if it
+-- happens to look like a client pointer. Six admin commands used to pass 1024
+-- where they meant "nobody" (GAMEPLAY-FIX.md 9.4).
+constants.MAX_GENTITIES = 1024
+constants.ENTITYNUM_NONE = 1023
+constants.ENTITYNUM_WORLD = 1022
+
 constants.TEAM_AXIS = 1
 constants.TEAM_ALLIES = 2
 constants.TEAM_SPECTATORS = 3
@@ -70,10 +84,29 @@ constants.AREA_CHAT = 2
 constants.AREA_CP = 3
 constants.AREA_BP = 4
 
-constants.VOTE_TYPES = { "antilag", "balancedteams", "comp", "friendlyfire", "gamconstantsype", "kick", 
-    "map", "maprestart", "matchresconstants", "mutespecs", "muting", "nextcampaign", "nextmap", 
-    "poll", "pub", "referee", "restartcampaign", "shufflconstantseamsxp", "shufflconstantseamsxp_norestart",
-    "surrender", "swapteams", "timelimit", "warmupdamage"
+-- The vote types ET: Legacy knows: aVoteInfo[] in g_vote.c. Cmd_CallVote_f()
+-- answers anything that is not in that table with "Unknown vote command" and
+-- its help text (g_cmds.c:3380), and no Lua call adds a row to it, so this is
+-- also the whole of what voting.load() can read a vote_allow_* cvar for.
+--
+-- The list this replaces was an ETPro era one that a search and replace had
+-- mangled on the way in: "gametype" had become "gamconstantsype", "matchreset"
+-- "matchresconstants" and "shuffleteamsxp" "shufflconstantseamsxp", and it
+-- named types no engine implements - comp, pub, shuffleteamsxp. Those names
+-- were dead in two directions: vote_allow_gamconstantsype is not a cvar, and a
+-- restriction on "comp" could never match a vote anybody called.
+--
+-- "muting" stays in the list on purpose. It is not a vote type, it is the cvar
+-- that gates both the mute and the unmute vote (vote_allow_muting, used by
+-- G_Mute_v and G_UnMute_v in g_vote.c), so voting.allow() needs the name to
+-- reach it. The same is true of campaign and unreferee, which the engine gates
+-- through vote_allow_map and vote_allow_referee.
+constants.VOTE_TYPES = {
+    "antilag", "balancedteams", "campaign", "cointoss", "config", "friendlyfire",
+    "gametype", "kick", "map", "maprestart", "matchreset", "mutespecs", "mute",
+    "muting", "nextcampaign", "nextmap", "poll", "referee", "restartcampaign",
+    "shuffleteams", "shuffleteams_norestart", "startmatch", "surrender",
+    "swapteams", "timelimit", "unmute", "unreferee", "warmupdamage"
 }
 
 return constants

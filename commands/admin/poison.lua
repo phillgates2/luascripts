@@ -30,7 +30,7 @@ local timers = wolfa_requireModule("util.timers")
 
 local function poisonTick(cmdClient, iteration)
     if players.isConnected(cmdClient) and et.gentity_get(cmdClient, "health") > 0 then
-        et.G_Damage(cmdClient, 0, 1024, 15, 0, 0) -- MOD_UNKNOWN = 0
+        et.G_Damage(cmdClient, 0, constants.ENTITYNUM_NONE, 15, 0, 0) -- MOD_UNKNOWN = 0
 
         et.trap_SendConsoleCommand(et.EXEC_APPEND, "playsound "..cmdClient.." \"sound/player/gurp2.wav\";")
     end

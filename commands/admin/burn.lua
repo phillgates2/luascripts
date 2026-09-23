@@ -31,7 +31,7 @@ local timers = wolfa_requireModule("util.timers")
 
 local function burnTick(cmdClient, iteration)
     if players.isConnected(cmdClient) and et.gentity_get(cmdClient, "health") > 0 then
-        et.G_Damage(cmdClient, 0, 1024, 25, 0, 0) -- MOD_UNKNOWN = 0
+        et.G_Damage(cmdClient, 0, constants.ENTITYNUM_NONE, 25, 0, 0) -- MOD_UNKNOWN = 0
     end
 end
 
@@ -79,9 +79,16 @@ function commandBurn(clientId, command, victim, ...)
     local args = {...}
     local reason = #args > 0 and table.concat(args, " ") or nil
 
-    -- the visual burning, supported by etpub based mods and ET: Legacy
-    pcall(et.gentity_set, cmdClient, "s.onFireStart", et.trap_Milliseconds())
-    pcall(et.gentity_set, cmdClient, "s.onFireEnd", et.trap_Milliseconds() + 6000)
+    -- the visual burning, supported by etpub based mods and ET: Legacy.
+    -- s.onFireStart/s.onFireEnd are read back by the engine against level.time
+    -- (the burn loop in g_active.c:196-206), so they are stamped from the level
+    -- clock timers.lua keeps - not from et.trap_Milliseconds(), which is the
+    -- process clock and drifts away from it as soon as sv_serverTimeReset is
+    -- set or the level clock restarts at a map change (GAMEPLAY-FIX.md 9.1).
+    local now = timers.getLevelTime()
+
+    pcall(et.gentity_set, cmdClient, "s.onFireStart", now)
+    pcall(et.gentity_set, cmdClient, "s.onFireEnd", now + 6000)
 
     for i = 0, 4 do
         timers.add(burnTick, i * 1000 + 500, 1, cmdClient)

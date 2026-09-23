@@ -36,9 +36,11 @@ local function throwPlayer(cmdClient, upVelocity, randomDirection)
         velocityY = (math.random() - 0.5) * 600
     end
 
-    et.gentity_set(cmdClient, "ps.velocity", 0, velocityX)
-    et.gentity_set(cmdClient, "ps.velocity", 1, velocityY)
-    et.gentity_set(cmdClient, "ps.velocity", 2, upVelocity)
+    -- ps.velocity is FIELD_VEC3 and the engine's setter reads it as a table
+    -- with the keys 1..3 (_etH_gentity_setvec3 in g_lua.c). Sending the
+    -- components one by one used to raise "attempt to index a number value"
+    -- here, which meant !throw never threw anybody (GAMEPLAY-FIX.md 9.2).
+    et.gentity_set(cmdClient, "ps.velocity", { velocityX, velocityY, upVelocity })
 end
 
 function commandThrow(clientId, command, victim, ...)

@@ -23,6 +23,32 @@ local timers = {}
 local data = {}
 local nextId = 0
 
+-- The level clock: the reading the engine compares entity timestamps against.
+-- G_InitGame() hands it to Lua as et_InitGame(levelTime, ...) and every frame
+-- as et_RunFrame(levelTime), where level.time = the server's own svs.time
+-- (g_main.c:4635, vmMain's GAME_RUN_FRAME case). The engine's checks all use
+-- it: s.onFireEnd > level.time in the burn loop (g_active.c:206), pers.*EndTime
+-- deadlines, pain_debounce_time, and so on.
+--
+-- It is NOT the same reading as et.trap_Milliseconds(), which is
+-- Sys_Milliseconds() - the process clock. The two only agree while
+-- sv_serverTimeReset is 0 and the server has not been up long enough to hit
+-- the 0x70000000 wrap that forces a reset anyway (sv_init.c:656). With
+-- sv_serverTimeReset 1 the level clock restarts at every map change while
+-- trap_Milliseconds() keeps counting, so a timestamp written with the process
+-- clock lands minutes or hours in the future of the level clock.
+--
+-- Anything Lua writes to a field the engine later compares against level.time
+-- has to be stamped from here. See GAMEPLAY-FIX.md sections 8.5 and 9.
+local levelTime = 0
+
+-- timers.getLevelTime(): milliseconds on the level clock, as of the last frame
+-- the engine ran. Use this instead of et.trap_Milliseconds() whenever the value
+-- is stored somewhere the engine reads back.
+function timers.getLevelTime()
+    return levelTime
+end
+
 function timers.add(func, interval, rep, ...)
     local args = {...}
     
@@ -51,7 +77,19 @@ function timers.remove(id)
     end
 end
 
-function timers.ongameframe(levelTime)
+function timers.oninit(initLevelTime)
+    -- et_InitGame(levelTime, ...) carries the level clock, so a command that
+    -- runs before the first frame still stamps from the right base.
+    levelTime = tonumber(initLevelTime) or 0
+end
+events.handle("onGameInit", timers.oninit)
+
+function timers.ongameframe(frameLevelTime)
+    -- refresh the shared clock before anything else reads it this frame; this
+    -- handler is registered when util.timers loads, which main.lua does before
+    -- the game modules, so it is the first onGameFrame handler to run.
+    levelTime = tonumber(frameLevelTime) or levelTime
+
     for id, timer in pairs(data) do
         if (et.trap_Milliseconds() - timer["start"]) > timer["interval"] then
             timer["function"](tables.unpack(timer["args"]))
