@@ -73,6 +73,28 @@ function wolfa_requireModule(name)
 	return result
 end
 
+-- What main.lua's et_SpawnEntitiesFromString() does at map load, before the
+-- modules (and the event bus) exist: reserve the knife entities while
+-- level.spawning is qtrue and hand them over in wolfa_knife_reserve.
+local KNIFE_RESERVE_SIZE = 12
+local KNIFE_MIN_FREE     = 8   -- KNIFE_MIN_FREE_ENTITIES, both files
+local function map_load_reserve(engine, size)
+	local reserve = {}
+	for _ = 1, (size or KNIFE_RESERVE_SIZE) do
+		local ok, free = pcall(et.G_EntitiesFree)
+		if ok and type(free) == "number" and free < KNIFE_MIN_FREE then break end
+		local okc, ent = pcall(et.G_CreateEntity,
+			'classname target_position origin "0 0 -4096"')
+		if not okc or type(ent) ~= "number" then break end
+		if ent < et.MAX_CLIENTS or ent >= et.MAX_GENTITIES then break end
+		local oki, inuse = pcall(et.gentity_get, ent, "inuse")
+		if not oki or inuse ~= 1 then break end
+		pcall(et.trap_UnlinkEntity, ent)
+		reserve[#reserve + 1] = ent
+	end
+	wolfa_knife_reserve = reserve
+end
+
 -- A server with WolfAdmin's own command handler registered first, exactly like
 -- main.lua does it. commands/commands.lua itself cannot be loaded here (it
 -- needs wolfa_requireLib("toml") from the engine's lua lib path, the admin
@@ -85,6 +107,12 @@ local function new_server(opts)
 	engine.install()
 	local events = wolfa_requireModule("util.events")
 	events.handle("onClientCommand", stub.wolfadmin_client_command(engine))
+	-- engine order (g_main.c G_InitGame): the Lua VMs load, then
+	-- G_SpawnEntitiesFromString() runs - level.spawning is qtrue, the only
+	-- moment et.G_CreateEntity() is legal - and et_InitGame (which loads the
+	-- modules and fires onGameInit) comes after. main.lua builds the knife
+	-- reserve in that window and gameplay adopts it in onGameInit.
+	map_load_reserve(engine)
 	wolfa_requireModule("game.gameplay")
 	events.trigger("onGameInit", 0, 0, false)
 	return engine, events
@@ -136,14 +164,13 @@ end
 -- entities the module created and has not freed again: a thrown knife is the
 -- only thing in these tests that uses an entity slot
 local function live_knives(engine)
-	local n, ents = 0, {}
+	local n = 0
 	for num, e in pairs(engine.ents) do
-		if e.inuse == 1 and e.classname == "target_position" then
+		if e.inuse == 1 and e.classname == "target_position" and e.r.linked then
 			n = n + 1
-			ents[#ents + 1] = num
 		end
 	end
-	return n, ents
+	return n
 end
 
 local TEAM_AXIS, TEAM_ALLIES = 1, 2
@@ -186,14 +213,15 @@ local function frames(events, from, to, step)
 	for t = from, to, step do events.trigger("onGameFrame", t) end
 end
 
--- throw once and return what the engine was asked to create
+-- throw once and return the knife entity that was linked (taken from the
+-- reserve - a throw must never create an entity, see CRASH-REPORT.md)
 local function throw(engine, events, num, weapon, levelTime)
 	events.trigger("onGameFrame", levelTime)
-	local before = #engine.gent_create_log
+	local before = #engine.link_log
 	local ret = events.trigger("onWeaponFire", num, weapon)
-	local created = #engine.gent_create_log > before
-		and engine.gent_create_log[#engine.gent_create_log].number or nil
-	return ret, created
+	local linked = #engine.link_log > before
+		and engine.link_log[#engine.link_log].number or nil
+	return ret, linked
 end
 
 -- --------------------------------- tests ---------------------------------
@@ -256,7 +284,8 @@ test("/kill is refused while in combat", function()
 	-- an unrelated command is never touched
 	check(client_command(engine, events, 3, "reload") == 0,
 		"other commands are still passed on to the engine")
-	check(#engine.gent_create_log == 0, "no entities were created by any of this")
+	check(#engine.gent_create_log == KNIFE_MAX_LIVE,
+		"nothing but the map-load knife reserve was created by any of this")
 end)
 
 -- The second half of the rule: an enemy who can see you keeps /kill locked even
@@ -401,22 +430,29 @@ test("throwing a knife creates a real entity and spends a throw", function()
 	check(c.ps.weapon == WP_THOMPSON, "the knife is granted without putting it in hand")
 
 	events.trigger("onGameFrame", 1000)
+	local created_before = #engine.gent_create_log
 	local ret, ent = throw(engine, events, 3, WP_KNIFE_KABAR, 1000)
 
 	check(ret == 1, "the throw is intercepted, so the melee stab does not happen")
-	check(ent ~= nil, "an entity was created")
+	check(ent ~= nil, "a knife was handed out of the reserve and linked")
 	check(c.ps.ammoclip[WP_KNIFE_KABAR] == KNIFE_CLIP_MAX - 1,
 		"throwing spends one of the five knives")
+	check(#engine.gent_create_log == created_before,
+		"the throw created nothing - et.G_CreateEntity() at runtime is the crash")
 
 	local e = gent(engine, ent)
-	check(e.inuse == 1, "the entity is still in use (G_CallSpawn did not free it)")
+	check(e.inuse == 1, "the entity is still in use (it is a reserve slot)")
 	check(e.classname == "target_position",
-		"created with a classname the engine's spawn table knows")
-	local created = engine.gent_create_log[1]
+		"a classname the engine's spawn table knows (reserved at map load)")
+	local created
+	for _, cr in ipairs(engine.gent_create_log) do
+		if cr.number == ent then created = cr break end
+	end
 	check(created ~= nil and created.vars:find("classname target_position", 1, true) ~= nil,
-		"G_CreateEntity got the spawn vars as a string")
+		"the reserve entity was created at map load with that classname")
 	-- out in front of the eyes: origin + forward*16, z + viewheight (40)
-	check(near(e.origin[1], 16) and near(e.origin[2], 0) and near(e.origin[3], 40),
+	check(near(e.r.currentOrigin[1], 16) and near(e.r.currentOrigin[2], 0)
+		and near(e.r.currentOrigin[3], 40),
 		"it starts at the muzzle point")
 
 	check(e.s.eType == ET_GENERAL,
@@ -498,8 +534,9 @@ test("a knife that hits an enemy damages them", function()
 	check(d and d.target == 5 and d.attacker == 3, "the enemy took it, from the thrower")
 	check(d and d.damage == THROW_DAMAGE, "a body hit does " .. THROW_DAMAGE .. " damage")
 	check(d and d.mod == MOD_KNIFE, "reported as MOD_KNIFE for the axis knife")
-	check(gent(engine, ent).inuse == 0, "the knife is freed on impact")
-	check(#engine.gent_free_log == 1, "and the entity slot is given back")
+	check(gent(engine, ent).r.linked == false, "the knife is unlinked on impact")
+	check(gent(engine, ent).inuse == 1, "the slot itself stays ours")
+	check(#engine.gent_free_log == 0, "and it went back to the reserve, not to the void")
 	check(engine.client(3).ps.ammoclip[WP_KNIFE] == KNIFE_CLIP_MAX - 1,
 		"the throw was still spent")
 
@@ -522,11 +559,11 @@ test("a knife that hits an enemy damages them", function()
 	player(engine3, events3, 3, TEAM_AXIS, PC_SOLDIER, { 0, 0, 0 }, { 0, 0, 0 })
 	player(engine3, events3, 5, TEAM_AXIS, PC_SOLDIER, { 300, 0, 0 })
 	events3.trigger("onGameFrame", 1000)
-	throw(engine3, events3, 3, WP_KNIFE, 1000)
+	local _, ent3 = throw(engine3, events3, 3, WP_KNIFE, 1000)
 	frames(events3, 1050, 2000, 50)
 	check(#engine3.damage == 0, "a friendly is not damaged")
 	check(live_knives(engine3) == 1, "the knife keeps flying past them")
-	local fe = gent(engine3, engine3.gent_create_log[1] and engine3.gent_create_log[1].number)
+	local fe = gent(engine3, ent3)
 	check(fe.s.pos.trType == TR_GRAVITY, "it did not stick in the friendly")
 	check(fe.r.currentOrigin[1] and fe.r.currentOrigin[1] > 400,
 		"and it flew on past them (G_Damage would have refused the hit anyway)")
@@ -567,8 +604,8 @@ test("a knife sticks in a wall and can be picked up", function()
 	events.trigger("onGameFrame", 2100)
 	check(c.ps.ammoclip[WP_KNIFE_KABAR] == KNIFE_CLIP_MAX,
 		"picking it up restores the throw")
-	check(e.inuse == 0 and #engine.gent_free_log == 1,
-		"and frees the entity")
+	check(e.r.linked == false and #engine.gent_free_log == 0,
+		"and is unlinked back into the reserve, not freed")
 	check(live_knives(engine) == 0, "no knives left in the world")
 
 	-- a full clip cannot take another one: the knife stays where it is. Throw
@@ -576,8 +613,9 @@ test("a knife sticks in a wall and can be picked up", function()
 	engine.place(3, { 0, 0, 0 })
 	local _, ent2 = throw(engine, events, 3, WP_KNIFE_KABAR, 3000)
 	local e2 = gent(engine, ent2)
+	check(ent2 == ent, "the released slot is handed out again by the next throw")
 	frames(events, 3050, 4000, 50)
-	check(e2.inuse == 1, "the second knife landed in the wall again")
+	check(e2.r.linked == true, "the second knife landed in the wall again")
 	check(c.ps.ammoclip[WP_KNIFE_KABAR] == KNIFE_CLIP_MAX - 1, "one throw was spent")
 	check(near(e2.r.currentOrigin[1], 499, 2), "in the same place as the first")
 
@@ -587,12 +625,12 @@ test("a knife sticks in a wall and can be picked up", function()
 	events.trigger("onGameFrame", 4100)
 	check(c.ps.ammoclip[WP_KNIFE_KABAR] == KNIFE_CLIP_MAX,
 		"a player with a full clip cannot pick up another knife")
-	check(e2.inuse == 1, "so it stays in the world for somebody else")
+	check(e2.r.linked == true, "so it stays in the world for somebody else")
 
-	-- left alone, it goes away after its lifetime instead of leaking the slot
+	-- left alone, it is unlinked after its lifetime instead of leaking the slot
 	engine.place(3, { 0, 0, 0 })
 	events.trigger("onGameFrame", 3000 + KNIFE_LIFETIME_MS + 1000)
-	check(e2.inuse == 0, "an unpicked knife is freed after its lifetime")
+	check(e2.r.linked == false, "an unpicked knife is unlinked after its lifetime")
 	check(live_knives(engine) == 0, "and the world is empty again")
 end)
 
@@ -638,13 +676,14 @@ test("the throw cooldown and an empty clip", function()
 		"firing something that is not a knife is left alone")
 end)
 
--- G_Spawn() calls G_Error() - which brings the whole server down - when the
--- entity pool is empty, so the number of knives in the world is capped and the
--- oldest one is freed to make room.
+-- The reserve holds KNIFE_MAX_LIVE slots and there is no thirteenth: once
+-- every slot is in the air, a further throw is refused (it falls through to
+-- the melee stab and spends nothing) instead of reaching for an entity the
+-- engine does not have.
 test("the world never holds more than " .. KNIFE_MAX_LIVE .. " knives", function()
 	local engine, events = new_server({ sv_maxclients = 16 })
 	-- three players far apart, throwing straight up: nothing to hit, so every
-	-- knife stays in the world until the cap or its lifetime ends it
+	-- knife stays in the world until its lifetime ends it
 	for i, num in ipairs({ 2, 4, 6 }) do
 		player(engine, events, num, TEAM_ALLIES, PC_SOLDIER,
 			{ (i - 1) * 4000, 0, 0 }, { -90, 0, 0 })
@@ -660,14 +699,20 @@ test("the world never holds more than " .. KNIFE_MAX_LIVE .. " knives", function
 		end
 	end
 
-	check(thrown == KNIFE_MAX_LIVE + 3, "all fifteen throws were accepted")
-	local live = live_knives(engine)
-	check(live == KNIFE_MAX_LIVE, "only " .. KNIFE_MAX_LIVE .. " knives are in the world")
-	check(#engine.gent_free_log == 3, "the three oldest were freed to make room")
+	check(thrown == KNIFE_MAX_LIVE, "only " .. KNIFE_MAX_LIVE .. " of the fifteen throws went off")
+	check(live_knives(engine) == KNIFE_MAX_LIVE, "the whole reserve is in the world")
+	check(#engine.gent_create_log == KNIFE_MAX_LIVE,
+		"and not one entity was created since the map load")
 	for _, num in ipairs({ 2, 4, 6 }) do
-		check(engine.client(num).ps.ammoclip[WP_KNIFE_KABAR] == 0,
-			"client " .. num .. " threw their whole clip")
+		check(engine.client(num).ps.ammoclip[WP_KNIFE_KABAR] == 1,
+			"client " .. num .. " kept the throw the dry reserve refused")
 	end
+
+	-- past the lifetime every knife is released, and throwing works again
+	frames(events, 36000 + KNIFE_LIFETIME_MS, 37000 + KNIFE_LIFETIME_MS, 1000)
+	check(live_knives(engine) == 0, "the lifetime released every knife")
+	local ret = events.trigger("onWeaponFire", 2, WP_KNIFE_KABAR)
+	check(ret == 1, "a released slot serves the next throw")
 end)
 
 -- The entity number G_CreateEntity() returns is only a promise: the engine
@@ -707,17 +752,175 @@ test("a knife whose entity slot the engine took back is dropped", function()
 	local was_at = { was[1], was[2], was[3] }
 
 	frames(events, 1050, 3000, 50)
-	check(engine.ents[other].inuse == 1, "the module did not free an entity it no longer owns")
+	check(engine.ents[other].inuse == 1, "the module did not touch an entity it no longer owns")
 	check(engine.ents[other].classname == "target_location", "and left it alone")
 	local now = engine.ents[other].r.currentOrigin
 	check(near(now[1], was_at[1], 0.001) and near(now[2], was_at[2], 0.001)
 		and near(now[3], was_at[3], 0.001),
 		"it did not carry on flying an entity that is not the knife")
-	local freed_by_module = 0
-	for i = frees_before + 1, #engine.gent_free_log do
-		if engine.gent_free_log[i].number == other then freed_by_module = freed_by_module + 1 end
+	check(#engine.gent_free_log == frees_before, "and no G_FreeEntity on the slot either")
+
+	-- the lost slot is out of the reserve for good: the next throw hands out a
+	-- different one
+	local ret2, ent2 = throw(engine, events, 3, WP_KNIFE_KABAR, 3000)
+	check(ret2 == 1 and ent2 ~= nil and ent2 ~= ent,
+		"the taken-over slot is never handed out again")
+	check(engine.ents[ent2].classname == "target_position", "the replacement is a pooled knife")
+end)
+
+-- -------------------------------- summary --------------------------------
+
+print("")
+if #failures > 0 then
+	print(("%d of %d checks FAILED:"):format(#failures, checks))
+	for _, f in ipairs(failures) do print("  - " .. f) end
+	os.exit(1)
+end
+print(("%d checks passed"):format(checks))
+os.exit(0)
+
+
+-- ================== the et.G_CreateEntity() crash ==========================
+--
+-- Root cause of "server crash with throw knife" (CRASH-REPORT.md): on current
+-- ET:Legacy, et.G_CreateEntity() at RUNTIME reaches G_SpawnString() - via
+-- G_SpawnGEntityFromSpawnVars()'s "notteam"/"allowteams" checks - which answers
+-- G_Error("G_SpawnString() called while not spawning") whenever
+-- level.spawning is qfalse. G_Error shuts the whole server down, and no
+-- Lua-level pcall can catch it. So the module never calls G_CreateEntity()
+-- at runtime at all: the knives are reserved during
+-- et_SpawnEntitiesFromString() - the engine's own map-load spawn window, while
+-- level.spawning is still qtrue - and re-used from the reserve from then on.
+test("the reserve is built at map load, and never again at runtime", function()
+	local engine, events = new_server({ sv_maxclients = 16 })
+	local created_at_load = #engine.gent_create_log
+	check(created_at_load == KNIFE_MAX_LIVE,
+		KNIFE_MAX_LIVE .. " knife entities are reserved while the map spawns")
+
+	local pool = {}
+	for num, e in pairs(engine.ents) do
+		if e.classname == "target_position" then pool[#pool + 1] = num end
 	end
-	check(freed_by_module == 0, "no G_FreeEntity on the slot after it changed hands")
+	check(#pool == KNIFE_MAX_LIVE, "all of them are target_positions")
+	local parked = 0
+	for _, num in ipairs(pool) do
+		if not engine.ents[num].r.linked then parked = parked + 1 end
+	end
+	check(parked == KNIFE_MAX_LIVE, "and parked unlinked, out of the snapshots")
+
+	player(engine, events, 3, TEAM_ALLIES, PC_SOLDIER, { 0, 0, 0 }, { 0, 0, 0 })
+	local _, ent = throw(engine, events, 3, WP_KNIFE_KABAR, 1000)
+	check(ent ~= nil, "a throw still hands out a knife")
+	check(#engine.gent_create_log == created_at_load,
+		"the throw created nothing - no et.G_CreateEntity() at runtime, ever")
+end)
+
+test("g_knifeDebug off: the reserve and the throw stay silent", function()
+	local engine, events = new_server({ sv_maxclients = 16 })
+	player(engine, events, 3, TEAM_AXIS, PC_SOLDIER, { 0, 0, 0 })
+
+	throw(engine, events, 3, WP_KNIFE, 1000)
+
+	check(#engine.diag == 0, "no G_LogPrint stage lines without g_knifeDebug")
+	local knifed = 0
+	for _, line in ipairs(engine.log) do
+		if line:find("knife:", 1, true) then knifed = knifed + 1 end
+	end
+	check(knifed == 0, "and no knife stage lines in the console log either")
+end)
+
+test("g_knifeDebug 1: the reserve adoption is bracketed slot by slot", function()
+	local engine = stub.new({ sv_maxclients = 16 })
+	engine.install()
+	engine.cvars.g_knifeDebug = "1"
+	map_load_reserve(engine)
+	local events = wolfa_requireModule("util.events")
+	events.handle("onClientCommand", stub.wolfadmin_client_command(engine))
+	wolfa_requireModule("game.gameplay")
+	events.trigger("onGameInit", 0, 0, false)
+
+	local joined = table.concat(engine.diag, "\n")
+	check(joined:find("adopt reserve ent", 1, true) ~= nil,
+		"every reserve slot is announced as it is verified")
+	local adopted = 0
+	for _, line in ipairs(engine.diag) do
+		if line:find("adopt reserve ent", 1, true) then adopted = adopted + 1 end
+	end
+	check(adopted == KNIFE_RESERVE_SIZE, "all " .. KNIFE_RESERVE_SIZE .. " slots were checked")
+	check(#engine.link_log == 0, "adoption links nothing - the slots stay parked")
+end)
+
+test("g_knifeDebug 1: the throw brackets the hand-out, and spawns nothing", function()
+	local engine, events = new_server({ sv_maxclients = 16 })
+	player(engine, events, 3, TEAM_AXIS, PC_SOLDIER, { 0, 0, 0 })
+	engine.cvars.g_knifeDebug = "1"
+
+	local created_before = #engine.gent_create_log
+	local ret, ent = throw(engine, events, 3, WP_KNIFE, 1000)
+
+	check(ret == 1 and ent, "the throw works with the trace on")
+	check(#engine.gent_create_log == created_before, "it created no entity")
+	local joined = table.concat(engine.diag, "\n")
+	check(joined:find("acquire pooled ent", 1, true) ~= nil,
+		"the reserve hand-out is bracketed")
+	check(joined:find("trap_LinkEntity", 1, true) ~= nil,
+		"the relink is bracketed")
+end)
+
+test("a starved entity pool builds a smaller reserve instead of G_Error-ing", function()
+	local engine = stub.new({ sv_maxclients = 16 })
+	engine.install()
+	engine.free_entities = KNIFE_MIN_FREE - 1  -- below the margin
+	map_load_reserve(engine)
+	local events = wolfa_requireModule("util.events")
+	events.handle("onClientCommand", stub.wolfadmin_client_command(engine))
+	wolfa_requireModule("game.gameplay")
+	events.trigger("onGameInit", 0, 0, false)
+
+	check(#engine.gent_create_log == 0, "no entity was created from a nearly-empty pool")
+
+	-- with nothing in the reserve, a throw falls through to the melee stab
+	local c = player(engine, events, 3, TEAM_ALLIES, PC_SOLDIER, { 0, 0, 0 })
+	local ret, ent = throw(engine, events, 3, WP_KNIFE, 1000)
+	check(ret == 0 and ent == nil, "the throw is passed through (the melee stab runs)")
+	check(c.ps.ammoclip[WP_KNIFE] == KNIFE_CLIP_MAX, "the clip was not spent")
+
+	-- a healthy pool serves the same map normally
+	engine.free_entities = nil
+	map_load_reserve(engine)
+	events.trigger("onGameInit", 0, 0, false)
+	check(#engine.gent_create_log == KNIFE_RESERVE_SIZE, "the rebuilt reserve is full")
+	local ret2, ent2 = throw(engine, events, 3, WP_KNIFE, 1200)
+	check(ret2 == 1 and ent2, "and the next throw out of it spawns")
+end)
+
+test("an insane entity number from G_CreateEntity is refused before any field access", function()
+	local engine = stub.new({ sv_maxclients = 16 })
+	engine.install()
+	-- _et_gentity_get/set, _et_G_FreeEntity and _et_trap_LinkEntity all do
+	-- "g_entities + n" raw in the C glue: touching 5000 here would be a
+	-- segfault, not a Lua error
+	engine.create_override = 5000
+	map_load_reserve(engine)
+	check(#wolfa_knife_reserve == 0, "the builder never kept the out-of-range entity")
+	local events = wolfa_requireModule("util.events")
+	events.handle("onClientCommand", stub.wolfadmin_client_command(engine))
+	wolfa_requireModule("game.gameplay")
+
+	-- hand the module a poisoned reserve directly: the adoption side must
+	-- refuse it before any field access, too
+	wolfa_knife_reserve = { 5000 }
+	events.trigger("onGameInit", 0, 0, false)
+	check(#engine.link_log == 0, "no trap_LinkEntity ever saw the bad slot")
+	local ranged = 0
+	for _, line in ipairs(engine.log) do
+		if line:find("knife_pool_range", 1, true) then ranged = ranged + 1 end
+	end
+	check(ranged == 1, "and the refusal is reported once per map")
+
+	wolfa_knife_reserve = { -1 }
+	events.trigger("onGameInit", 0, 0, false)
+	check(#engine.link_log == 0, "a negative entity number is refused the same way")
 end)
 
 -- -------------------------------- summary --------------------------------
