@@ -35,9 +35,9 @@
 -- upmove or usercmd state of any kind, and the engine only ever sets
 -- PMF_JUMP_HELD in PM_CheckJump(), which PM_WalkMove() calls and PM_AirMove()
 -- does not (bg_pmove.c:1306). A jump press in mid air therefore leaves nothing
--- a Lua module can read: PmoveSingle() clears the flag again on the next frame
--- whatever the player is holding (bg_pmove.c:5212). What Lua can see is the
--- take-off (PMF_JUMP_HELD rising, or ps.velocity[3] snapping back up to
+-- a Lua module can read: PmoveSingle() clears the flag when the key comes up
+-- (bg_pmove.c:5214) and an air press sets nothing again. What Lua can see is
+-- the take-off (PMF_JUMP_HELD rising, or ps.velocity[3] snapping back up to
 -- JUMP_VELOCITY), the airborne state (a trace down from the feet) and the duck
 -- flag, which PM_CheckDuck() sets in the air as well (bg_pmove.c:2027).
 --
@@ -49,7 +49,7 @@
 --   g_doublejump_window  ms after take-off           (default 850)
 --   g_doublejump_boost   multiplier on the jump      (default 1.4)
 --   g_doublejump_sound   sound to play, "" for none  (default "")
---   g_doublejump_announce 0 = do not tell players how to bind it (default 1)
+--   g_doublejump_announce 0 = do not push the bind on players (default 1)
 --
 --   command - the player binds a key to the client command "djump". Bound next
 --             to jump, as in  bind SPACE "+moveup;djump"  it plays like
@@ -58,6 +58,15 @@
 --             owning air-crouching.
 --   auto    - every take-off is boosted. No second input at all, and so not a
 --             double jump so much as a higher one.
+--
+-- Because an air press is invisible, command mode only works once each player
+-- has bound "djump" to something. The first spawn pushes that bind twice where
+-- it cannot be missed - a centre print and a message-line copy, both off with
+-- g_doublejump_announce 0. Server text cannot show quote characters (the
+-- client tokenizer's own note: "this doesn't handle \" escaping"), so the hint
+-- prints the runnable  bind MOUSE3 djump  and describes the jump-key bind in
+-- words. The exact line to type there is:
+-- bind SPACE "+moveup;djump"
 --
 -- Two things a server owner should know. The velocity is written server side,
 -- so the client's own prediction is corrected on the next snapshot - the same
@@ -95,7 +104,11 @@ local PM_NORMAL = 0
 
 -- the ground probe: how far below the feet to look, and how far the box reaches
 -- around them. A player less than GROUND_PROBE units off the floor reads as
--- standing on it, which is what the engine's own ground trace tolerates.
+-- standing on it, which is what the engine's own ground trace tolerates. The
+-- feet are not at ps.origin: the player box's z mins is -24 (bg_pmove.c:427),
+-- so the soles sit FEET_OFFSET below the origin. Probing around the origin
+-- itself, as this first did, made every player read as airborne all the time.
+local FEET_OFFSET = 24
 local GROUND_PROBE = 4
 local GROUND_LIFT = 1
 local PROBE_MINS = { -15, -15, -1 }
@@ -211,7 +224,7 @@ end
 -- Is the player off the floor? The engine does not expose ps.groundEntityNum to
 -- Lua (only s.groundEntityNum, which ClientSpawn() sets once and nothing keeps
 -- in step), so this sweeps a short box down from the feet and ignores the
--- player's own body.
+-- player's own body. The soles sit FEET_OFFSET below ps.origin.
 function doublejump.isAirborne(clientId)
     local origin = et.gentity_get(clientId, "ps.origin")
 
@@ -223,9 +236,11 @@ function doublejump.isAirborne(clientId)
         return false
     end
 
+    local feet = origin[3] - FEET_OFFSET
+
     local ok, tr = pcall(et.trap_Trace,
-        { origin[1], origin[2], origin[3] + GROUND_LIFT }, PROBE_MINS, PROBE_MAXS,
-        { origin[1], origin[2], origin[3] - GROUND_PROBE }, clientId, MASK_GROUND)
+        { origin[1], origin[2], feet + GROUND_LIFT }, PROBE_MINS, PROBE_MAXS,
+        { origin[1], origin[2], feet - GROUND_PROBE }, clientId, MASK_GROUND)
 
     if not ok or type(tr) ~= "table" then
         return false
@@ -407,7 +422,10 @@ end
 events.handle("onGameFrame", doublejump.ongameframe)
 
 -- Tell a player once per map how to get the second jump, so the feature is not
--- invisible to everybody who has not read the release notes.
+-- invisible to everybody who has not read the release notes. A console print
+-- scrolls past unseen in a firefight - and the old one truncated at the first
+-- quote it tried to show - so the hint goes where it is seen: a centre print,
+-- and a copy on the message line that also lands in the console for copying.
 local function announce(clientId)
     if cvarNumber("g_doublejump_announce", 1) == 0 then
         return
@@ -416,11 +434,18 @@ local function announce(clientId)
     local mode = doublejump.getMode()
 
     if mode == "command" then
-        et.trap_SendServerCommand(clientId,
-            "print \"^ddouble jump^7: bind a key to ^3djump^7 - ^3bind MOUSE3 djump^7, or ^3bind SPACE \\\"+moveup;djump\\\"^7 to keep it on the jump key.\n\"")
+        local hint = "^ddouble jump^7: jump, then tap jump again in mid air. " ..
+            "One-time setup in the console: ^3bind MOUSE3 djump^7 - " ..
+            "or bind your jump key to ^3+moveup;djump^7 as one quoted command."
+
+        et.trap_SendServerCommand(clientId, "cp \""..hint.."\"")
+        et.trap_SendServerCommand(clientId, "cpm \""..hint.."\"")
     elseif mode == "crouch" then
-        et.trap_SendServerCommand(clientId,
-            "print \"^ddouble jump^7: duck (^3crouch^7) in mid air, within "..doublejump.getWindow().." ms of leaving the ground.\n\"")
+        local hint = "^ddouble jump^7: duck (^3crouch^7) in mid air, within " ..
+            doublejump.getWindow().." ms of leaving the ground."
+
+        et.trap_SendServerCommand(clientId, "cp \""..hint.."\"")
+        et.trap_SendServerCommand(clientId, "cpm \""..hint.."\"")
     end
 end
 

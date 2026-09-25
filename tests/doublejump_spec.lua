@@ -123,8 +123,10 @@ local function new_server(opts)
 	}
 end
 
--- a player standing on the floor. A spectator gets no load-out, the way the
--- engine gives one only to the two playing teams.
+-- a player standing on the floor. ps.origin floats 24 above the soles (the
+-- player box's z mins is -24, bg_pmove.c:427), so standing on the z = 0 floor
+-- is an origin of z = 24 - the ground tests pin that offset. A spectator gets
+-- no load-out, the way the engine gives one only to the two playing teams.
 local function player(server, num, team, origin)
 	team = team or 1
 	server.engine.connect(num, team, 0)
@@ -135,7 +137,7 @@ local function player(server, num, team, origin)
 		server.engine.health(num, 100)
 	end
 
-	server.engine.place(num, origin or { 0, 0, 0 }, { 0, 0, 0 })
+	server.engine.place(num, origin or { 0, 0, 24 }, { 0, 0, 0 })
 	return num
 end
 
@@ -209,7 +211,7 @@ end)
 
 test("a jump in the air within the window is boosted", function()
 	local server = new_server({ sv_maxclients = 8 })
-	player(server, 1, 1, { 0, 0, 0 })
+	player(server, 1, 1, { 0, 0, 24 })
 
 	takeoff(server, 1, 1050)
 	inAir(server, 1, 1100, 60, 200)
@@ -226,7 +228,7 @@ end)
 
 test("only one extra jump per time in the air", function()
 	local server = new_server({ sv_maxclients = 8 })
-	player(server, 1, 1, { 0, 0, 0 })
+	player(server, 1, 1, { 0, 0, 24 })
 
 	takeoff(server, 1, 1050)
 	inAir(server, 1, 1100, 60, 200)
@@ -248,7 +250,7 @@ end)
 
 test("the window closes 850 ms after the take-off", function()
 	local server = new_server({ sv_maxclients = 8 })
-	player(server, 1, 1, { 0, 0, 0 })
+	player(server, 1, 1, { 0, 0, 24 })
 
 	takeoff(server, 1, 1050)
 	inAir(server, 1, 1050 + WINDOW - 50, 200, 100)
@@ -263,11 +265,11 @@ end)
 
 test("a player on the ground does not get an air jump", function()
 	local server = new_server({ sv_maxclients = 8 })
-	player(server, 1, 1, { 0, 0, 0 })
+	player(server, 1, 1, { 0, 0, 24 })
 
 	takeoff(server, 1, 1050)
-	-- back on the floor: the ground probe hits the wall the stub added
-	inAir(server, 1, 1100, 0, 0)
+	-- back on the floor: the ground probe at the soles finds the floor again
+	inAir(server, 1, 1100, 24, 0)
 
 	djump(server, 1)
 	check(vz(server, 1) == 0, "standing on the floor, djump does nothing")
@@ -279,9 +281,9 @@ end)
 
 test("jaymod's other refusals: prone, dead, respawned, spectating", function()
 	local server = new_server({ sv_maxclients = 8 })
-	player(server, 1, 1, { 0, 0, 0 })
-	player(server, 2, 3, { 200, 0, 0 })
-	player(server, 3, 2, { 400, 0, 0 })
+	player(server, 1, 1, { 0, 0, 24 })
+	player(server, 2, 3, { 200, 0, 24 })
+	player(server, 3, 2, { 400, 0, 24 })
 
 	local c = server.engine.client(1)
 
@@ -324,7 +326,7 @@ end)
 
 test("a bunny hop with the jump key held down still counts as a take-off", function()
 	local server = new_server({ sv_maxclients = 8 })
-	player(server, 1, 1, { 0, 0, 0 })
+	player(server, 1, 1, { 0, 0, 24 })
 
 	-- first jump: the flag rises
 	takeoff(server, 1, 1050)
@@ -335,7 +337,7 @@ test("a bunny hop with the jump key held down still counts as a take-off", funct
 	-- land and jump again without ever letting go: PMF_JUMP_HELD never falls, so
 	-- there is no edge to see, but the velocity snaps back to JUMP_VELOCITY
 	server.engine.client(1).ps.velocity = { 0, 0, -300 }
-	server.engine.place(1, { 0, 0, 0 })
+	server.engine.place(1, { 0, 0, 24 })
 	frame(server, 1600)
 
 	server.engine.client(1).ps.velocity = { 0, 0, JUMP_VELOCITY }
@@ -350,7 +352,7 @@ end)
 
 test("crouch mode fires on a duck in mid air", function()
 	local server = new_server({ sv_maxclients = 8 })
-	player(server, 1, 1, { 0, 0, 0 })
+	player(server, 1, 1, { 0, 0, 24 })
 
 	et.trap_Cvar_Set("g_doublejump_mode", "crouch")
 	check(server.doublejump.getMode() == "crouch", "the mode cvar is read live")
@@ -376,7 +378,7 @@ end)
 
 test("auto mode boosts every take-off and refuses the key", function()
 	local server = new_server({ sv_maxclients = 8 })
-	player(server, 1, 1, { 0, 0, 0 })
+	player(server, 1, 1, { 0, 0, 24 })
 
 	et.trap_Cvar_Set("g_doublejump_mode", "auto")
 	check(server.doublejump.getMode() == "auto", "the mode cvar is read live")
@@ -395,7 +397,7 @@ end)
 
 test("g_doublejump 0 turns the whole thing off", function()
 	local server = new_server({ sv_maxclients = 8 })
-	player(server, 1, 1, { 0, 0, 0 })
+	player(server, 1, 1, { 0, 0, 24 })
 
 	et.trap_Cvar_Set("g_doublejump", "0")
 	check(not server.doublejump.isEnabled(), "the cvar is read live")
@@ -416,8 +418,8 @@ end)
 
 test("!doublejump toggles, reports and retunes", function()
 	local server = new_server({ sv_maxclients = 8 })
-	player(server, 0, 1, { 0, 0, 0 })
-	player(server, 1, 1, { 128, 0, 0 })
+	player(server, 0, 1, { 0, 0, 24 })
+	player(server, 1, 1, { 128, 0, 24 })
 
 	admin["doublejump"].fn(0, "doublejump", "off")
 	check(et.trap_Cvar_Get("g_doublejump") == "0", "!doublejump off writes the cvar")
@@ -465,12 +467,16 @@ end)
 
 test("players are told how to bind it, once", function()
 	local server = new_server({ sv_maxclients = 8 })
-	player(server, 1, 1, { 0, 0, 0 })
+	player(server, 1, 1, { 0, 0, 24 })
 
 	server.events.trigger("onPlayerSpawn", 1, false)
 	check(sentTo(server, 1):find("djump", 1, true) ~= nil, "the first spawn explains the bind")
 	check(sentTo(server, 1):find("+moveup;djump", 1, true) ~= nil,
 		"including how to keep it on the jump key")
+	check(sentTo(server, 1):find("cp \"", 1, true) ~= nil, "as a centre print, seen in play")
+	check(sentTo(server, 1):find("cpm \"", 1, true) ~= nil, "and again on the message line")
+	check(sentTo(server, 1):find("print ", 1, true) == nil,
+		"not as a console print, which scrolls past unseen")
 
 	server.engine.commands = {}
 	server.events.trigger("onPlayerSpawn", 1, true)
@@ -479,14 +485,14 @@ test("players are told how to bind it, once", function()
 	-- a new server that has the announcement switched off stays quiet
 	local quiet = new_server({ sv_maxclients = 8 })
 	et.trap_Cvar_Set("g_doublejump_announce", "0")
-	player(quiet, 2, 1, { 0, 0, 0 })
+	player(quiet, 2, 1, { 0, 0, 24 })
 	quiet.events.trigger("onPlayerSpawn", 2, false)
 	check(sentTo(quiet, 2) == "", "g_doublejump_announce 0 keeps quiet")
 end)
 
 test("a disconnect and a spawn clear the bookkeeping", function()
 	local server = new_server({ sv_maxclients = 8 })
-	player(server, 1, 1, { 0, 0, 0 })
+	player(server, 1, 1, { 0, 0, 24 })
 
 	takeoff(server, 1, 1050)
 	inAir(server, 1, 1100, 60, 200)
@@ -497,7 +503,7 @@ test("a disconnect and a spawn clear the bookkeeping", function()
 	server.events.trigger("onClientDisconnect", 1)
 	server.engine.connect(1, 1, 0)
 	server.engine.spawn(1)
-	server.engine.place(1, { 0, 0, 0 })
+	server.engine.place(1, { 0, 0, 24 })
 	server.events.trigger("onPlayerSpawn", 1, false)
 
 	takeoff(server, 1, 2050)
@@ -508,7 +514,7 @@ end)
 
 test("other client commands are left to the engine", function()
 	local server = new_server({ sv_maxclients = 8 })
-	player(server, 1, 1, { 0, 0, 0 })
+	player(server, 1, 1, { 0, 0, 24 })
 
 	check(otherCommand(server, 1, "kill") == 0, "kill is not claimed")
 	check(otherCommand(server, 1, "+moveup") == 0, "jump is not claimed")

@@ -1193,3 +1193,67 @@ and a server that wants the old pure-melee left-click sets
   a second fire inside the cooldown falls through to melee (26 checks).
 - All suites green: audit_fix 70, botvote 184, doublejump 64, gameplay 38,
   honors 34, slot5_engine 20, knife_kill 182, live_sim 26.
+
+## 13. Follow-up: "double jump not working" - the bind nobody had and the probe that missed the floor
+
+Symptom from the server: pressing jump twice does nothing, though `g_doublejump`
+is 1 and the module loads cleanly - its own 64-check suite was already green.
+
+Three findings, verified against ET:Legacy master (g_lua.c, bg_pmove.c, cmd.c,
+cg_servercmds.c):
+
+1. **The default mode needs a bind no player has.** `g_doublejump_mode`
+   defaults to `command`: the second jump is requested with the client command
+   `djump`, which only fires from a key the player bound themselves -
+   `bind SPACE "+moveup;djump"` (jaymod's tap-jump-twice) or `bind MOUSE3
+   djump`. A jump press in mid air is invisible to Lua: etlib exposes no
+   usercmd state, and PMF_JUMP_HELD is set only in PM_CheckJump(), which
+   PM_WalkMove() calls on the ground and PM_AirMove() does not (bg_pmove.c:782,
+   :1327); PmoveSingle() clears it on key-up (:5214) and an air press sets
+   nothing again. Stock players pressing jump twice therefore get exactly
+   nothing - the same defect class as the throw knife's dead right-click (§12).
+
+2. **The one hint was invisible - and broken anyway.** `announce()` sent a
+   console `print` once per connect, unseen in normal play, and the line
+   truncated at the first escaped quote it tried to show: the client's command
+   tokenizer has no `\"` escapes (cmd.c, "this doesn't handle \" escaping") and
+   cp/cpm/print all read CG_Argv(1) only (cg_servercmds.c:3107). A `"` character
+   cannot travel through any server text at all, so the jump-key bind line can
+   never be shown verbatim in game.
+
+3. **The ground probe measured from the wrong point.** The player box's z mins
+   is -24 (bg_pmove.c:427): `ps.origin` floats 24 units above the soles.
+   `isAirborne()` probed around `ps.origin`, a few units of mid-air, so every
+   player read as airborne all the time and `check()`'s "on the ground" refusal
+   was dead code. The stub suite never caught it: `tests/doublejump_spec.lua`
+   placed standing players at `origin == floor`, an origin-at-feet convention
+   the engine does not use.
+
+Fix (the requested UX - jaymod-style jump-tap, with the bind pushed):
+
+- The bind is now pushed where it cannot be missed: at the first spawn the
+  player gets the hint twice - a centre print (`cp`) and a message-line copy
+  (`cpm`, which also lands in the console for copying). `g_doublejump_announce
+  0` keeps it quiet. Since server text cannot show quote characters, the hint
+  shows the runnable `bind MOUSE3 djump` verbatim and describes the jump-key
+  bind in words ("bind your jump key to +moveup;djump as one quoted command");
+  the exact line is spelled out in the module header and above:
+  `bind SPACE "+moveup;djump"`.
+- `!doublejump mode command` repeats the requirement in the chat output.
+- `isAirborne()` probes at the soles (`FEET_OFFSET = 24` below `ps.origin`), so
+  the ground refusal answers honestly in real play: a `djump` mashed with the
+  ground jump is turned away ("no take-off seen yet" - the frame poll has not
+  latched the take-off yet - or "on the ground") and cannot spend the one air
+  jump, and ground crouches no longer fire the crouch mode.
+- The spec moved to engine-truth geometry (standing `origin z = 24` over a
+  `z = 0` floor), so the ground checks pin the offset: probing at the origin
+  again now fails "standing on the floor, djump does nothing".
+
+Not changed: `command` stays the default mode, the jaymod numbers stand (850 ms
+window, 1.4 boost, one air jump per airtime), and single jumps are untouched -
+the module only ever writes `ps.velocity` in `apply()`.
+
+Verification: `/tmp/lua54 tests/<name>.lua`, all green - doublejump 67 (three
+new checks: the hint arrives as `cp` + `cpm` and never as a bare console
+`print`), knife_kill 182, live_sim 26, gameplay 38, audit_fix 70, botvote 184,
+honors 34, slot5_engine 20.
