@@ -213,15 +213,32 @@ local function frames(events, from, to, step)
 	for t = from, to, step do events.trigger("onGameFrame", t) end
 end
 
--- throw once and return the knife entity that was linked (taken from the
--- reserve - a throw must never create an entity, see CRASH-REPORT.md)
+-- throw once via the right-click verb and return the knife entity that was
+-- linked (taken from the reserve - a throw must never create an entity, see
+-- CRASH-REPORT.md). The requested weapon is put in hand first, like the
+-- player switching to it; the throw only goes off with a knife in hand.
 local function throw(engine, events, num, weapon, levelTime)
+	local c = engine.client(num)
+	if c and c.ps then
+		local ammo = c.ps.ammo[weapon] or 0
+		local clip = c.ps.ammoclip[weapon] or 0
+		-- AddWeaponToPlayer assigns both pools, so hand back what the player
+		-- already has; setcurrent puts the weapon in hand
+		pcall(et.AddWeaponToPlayer, num, weapon, ammo, clip, 1)
+	end
 	events.trigger("onGameFrame", levelTime)
 	local before = #engine.link_log
-	local ret = events.trigger("onWeaponFire", num, weapon)
+	local ret = client_command(engine, events, num, "throwknife")
 	local linked = #engine.link_log > before
 		and engine.link_log[#engine.link_log].number or nil
 	return ret, linked
+end
+
+-- left-click: firing the knife. With the right-click throw as default this
+-- must always fall through to the engine's melee stab (return 0).
+local function fire_knife(engine, events, num, weapon, levelTime)
+	events.trigger("onGameFrame", levelTime)
+	return events.trigger("onWeaponFire", num, weapon)
 end
 
 -- --------------------------------- tests ---------------------------------
@@ -409,8 +426,8 @@ test("a player who has been stuck may /kill", function()
 end)
 
 -- The thrown knife, from the throw itself. The old code called et.G_Spawn(),
--- which is not in the API, so nothing was ever created and the melee stab was
--- swallowed anyway.
+-- which is not in the API, so nothing was ever created. The throw lives on
+-- the throwknife command (right-click); left-click stays a melee stab.
 test("throwing a knife creates a real entity and spends a throw", function()
 	local engine, events = new_server({ sv_maxclients = 16 })
 	check(et.G_Spawn == nil, "the Lua API has no et.G_Spawn() (g_lua.c etlib[])")
@@ -433,7 +450,7 @@ test("throwing a knife creates a real entity and spends a throw", function()
 	local created_before = #engine.gent_create_log
 	local ret, ent = throw(engine, events, 3, WP_KNIFE_KABAR, 1000)
 
-	check(ret == 1, "the throw is intercepted, so the melee stab does not happen")
+	check(ret == 1, "the throwknife command throws")
 	check(ent ~= nil, "a knife was handed out of the reserve and linked")
 	check(c.ps.ammoclip[WP_KNIFE_KABAR] == KNIFE_CLIP_MAX - 1,
 		"throwing spends one of the five knives")
@@ -526,7 +543,7 @@ test("a knife that hits an enemy damages them", function()
 	player(engine, events, 5, TEAM_ALLIES, PC_SOLDIER, { 300, 0, 0 })
 	events.trigger("onGameFrame", 1000)
 	local ret, ent = throw(engine, events, 3, WP_KNIFE, 1000)
-	check(ret == 1, "the axis throw is intercepted too")
+	check(ret == 1, "the axis throwknife throw works too")
 
 	frames(events, 1050, 2000, 50)
 	check(#engine.damage == 1, "one hit was dealt")
@@ -634,8 +651,8 @@ test("a knife sticks in a wall and can be picked up", function()
 	check(live_knives(engine) == 0, "and the world is empty again")
 end)
 
--- Rate limiting: one throw per THROW_COOLDOWN_MS, and an empty clip has to fall
--- through to the engine's melee stab (return 0) instead of eating the attack.
+-- Rate limiting: one throw per THROW_COOLDOWN_MS, and an empty clip throws
+-- nothing (return 0) instead of eating the attack. Left-click always stabs.
 test("the throw cooldown and an empty clip", function()
 	local engine, events = new_server({ sv_maxclients = 16 })
 	local c = player(engine, events, 3, TEAM_ALLIES, PC_SOLDIER, { 0, 0, 0 }, { 0, 0, 0 })
@@ -645,7 +662,7 @@ test("the throw cooldown and an empty clip", function()
 	check(ret1 == 1 and ent1 ~= nil, "the first throw goes off")
 
 	local ret2 = throw(engine, events, 3, WP_KNIFE_KABAR, 1000 + THROW_COOLDOWN_MS - 100)
-	check(ret2 == 0, "another throw inside the cooldown is passed to the engine")
+	check(ret2 == 0, "another throw inside the cooldown is refused")
 	check(c.ps.ammoclip[WP_KNIFE_KABAR] == KNIFE_CLIP_MAX - 1,
 		"and spends nothing")
 	check(live_knives(engine) == 1, "and creates nothing")
@@ -655,17 +672,17 @@ test("the throw cooldown and an empty clip", function()
 		"after the cooldown the next throw goes off")
 	check(c.ps.ammoclip[WP_KNIFE_KABAR] == KNIFE_CLIP_MAX - 2, "and spends a knife")
 
-	-- the clip runs out: the melee stab must keep working
+	-- the clip runs out: the command throws nothing, left-click still stabs
 	for i = 1, KNIFE_CLIP_MAX - 2 do
 		throw(engine, events, 3, WP_KNIFE_KABAR, 3000 + i * (THROW_COOLDOWN_MS + 100))
 	end
 	check(c.ps.ammoclip[WP_KNIFE_KABAR] == 0, "all " .. KNIFE_CLIP_MAX .. " knives are thrown")
 	local before = #engine.gent_create_log
 	local ret4 = throw(engine, events, 3, WP_KNIFE_KABAR, 20000)
-	check(ret4 == 0, "an empty clip lets the engine do the normal melee stab")
+	check(ret4 == 0, "an empty clip throws nothing")
 	check(#engine.gent_create_log == before, "and creates no entity")
 
-	-- a spectator, a dead player and a player with no knife are passed through
+	-- a spectator, a dead player and a player without a knife in hand
 	engine.health(3, 0)
 	check(throw(engine, events, 3, WP_KNIFE_KABAR, 21000) == 0, "a dead player cannot throw")
 	engine.health(3, 100)
@@ -673,27 +690,77 @@ test("the throw cooldown and an empty clip", function()
 	events.trigger("onClientBegin", 9)
 	check(throw(engine, events, 9, WP_KNIFE_KABAR, 22000) == 0, "a spectator cannot throw")
 	check(throw(engine, events, 3, WP_THOMPSON, 23000) == 0,
-		"firing something that is not a knife is left alone")
+		"throwknife without a knife in hand does nothing")
+end)
+
+-- Left-click (WeaponFire) with a knife is a pure melee stab now: it never
+-- throws, spends nothing and creates nothing - even with a full clip.
+test("left-click with a knife stabs, it never throws", function()
+	local engine, events = new_server({ sv_maxclients = 16 })
+	local c = player(engine, events, 3, TEAM_ALLIES, PC_SOLDIER, { 0, 0, 0 }, { 0, 0, 0 })
+	events.trigger("onGameFrame", 1000)
+	check(c.ps.ammoclip[WP_KNIFE_KABAR] == KNIFE_CLIP_MAX, "the clip starts full")
+
+	local created_before = #engine.gent_create_log
+	local ret = fire_knife(engine, events, 3, WP_KNIFE_KABAR, 1000)
+	check(ret == 0, "firing the knife falls through to the engine's melee stab")
+	check(c.ps.ammoclip[WP_KNIFE_KABAR] == KNIFE_CLIP_MAX, "and spends no throw")
+	check(live_knives(engine) == 0, "and links no knife")
+	check(#engine.gent_create_log == created_before, "and creates no entity")
+	check(#engine.damage == 0, "the stab itself is the engine's business here")
+end)
+
+-- The right-click binding is "weapalt; throwknife": weapalt reaches the
+-- server only in theory (cgame consumes it), but when it does - and when the
+-- short aliases are used - only a knife in hand claims it.
+test("weapalt and the throw aliases only throw with a knife in hand", function()
+	local engine, events = new_server({ sv_maxclients = 16 })
+	local c = player(engine, events, 3, TEAM_AXIS, PC_SOLDIER, { 0, 0, 0 }, { 0, 0, 0 })
+	events.trigger("onGameFrame", 1000)
+
+	-- holding the SMG: none of the verbs throw
+	et.AddWeaponToPlayer(3, WP_MP40, c.ps.ammo[WP_MP40] or 0, c.ps.ammoclip[WP_MP40] or 0, 1)
+	check(c.ps.weapon == WP_MP40, "the SMG is in hand")
+	for _, cmd in ipairs({ "throwknife", "throwk", "tknife", "weapalt" }) do
+		local before = #engine.link_log
+		local ret = client_command(engine, events, 3, cmd)
+		check(ret == 0, cmd .. " without a knife in hand is left alone")
+		check(#engine.link_log == before, "and it links nothing")
+	end
+	check(c.ps.ammoclip[WP_KNIFE] == KNIFE_CLIP_MAX, "and spends no throw")
+
+	-- holding the knife: every verb throws (cooldown respected between them)
+	et.AddWeaponToPlayer(3, WP_KNIFE, c.ps.ammo[WP_KNIFE] or 0, c.ps.ammoclip[WP_KNIFE] or 0, 1)
+	local t = 2000
+	for _, cmd in ipairs({ "throwknife", "throwk", "tknife", "weapalt" }) do
+		events.trigger("onGameFrame", t)
+		local ret = client_command(engine, events, 3, cmd)
+		check(ret == 1, cmd .. " with a knife in hand throws")
+		t = t + THROW_COOLDOWN_MS + 100
+	end
+	check(c.ps.ammoclip[WP_KNIFE] == KNIFE_CLIP_MAX - 4, "four throws were spent")
+	check(live_knives(engine) == 4, "four knives are in the world")
 end)
 
 -- The reserve holds KNIFE_MAX_LIVE slots and there is no thirteenth: once
--- every slot is in the air, a further throw is refused (it falls through to
--- the melee stab and spends nothing) instead of reaching for an entity the
--- engine does not have.
+-- every slot is in the air, a further throw is refused (spends nothing)
+-- instead of reaching for an entity the engine does not have.
 test("the world never holds more than " .. KNIFE_MAX_LIVE .. " knives", function()
 	local engine, events = new_server({ sv_maxclients = 16 })
 	-- three players far apart, throwing straight up: nothing to hit, so every
 	-- knife stays in the world until its lifetime ends it
 	for i, num in ipairs({ 2, 4, 6 }) do
-		player(engine, events, num, TEAM_ALLIES, PC_SOLDIER,
+		local c = player(engine, events, num, TEAM_ALLIES, PC_SOLDIER,
 			{ (i - 1) * 4000, 0, 0 }, { -90, 0, 0 })
+		et.AddWeaponToPlayer(num, WP_KNIFE_KABAR,
+			c.ps.ammo[WP_KNIFE_KABAR] or 0, c.ps.ammoclip[WP_KNIFE_KABAR] or 0, 1)
 	end
 	events.trigger("onGameFrame", 1000)
 
 	local thrown = 0
 	for t = 2000, 6000, 1000 do
 		for _, num in ipairs({ 2, 4, 6 }) do
-			local ret = events.trigger("onWeaponFire", num, WP_KNIFE_KABAR)
+			local ret = client_command(engine, events, num, "throwknife")
 			events.trigger("onGameFrame", t)
 			if ret == 1 then thrown = thrown + 1 end
 		end
@@ -711,7 +778,7 @@ test("the world never holds more than " .. KNIFE_MAX_LIVE .. " knives", function
 	-- past the lifetime every knife is released, and throwing works again
 	frames(events, 36000 + KNIFE_LIFETIME_MS, 37000 + KNIFE_LIFETIME_MS, 1000)
 	check(live_knives(engine) == 0, "the lifetime released every knife")
-	local ret = events.trigger("onWeaponFire", 2, WP_KNIFE_KABAR)
+	local ret = client_command(engine, events, 2, "throwknife")
 	check(ret == 1, "a released slot serves the next throw")
 end)
 
@@ -767,18 +834,6 @@ test("a knife whose entity slot the engine took back is dropped", function()
 		"the taken-over slot is never handed out again")
 	check(engine.ents[ent2].classname == "target_position", "the replacement is a pooled knife")
 end)
-
--- -------------------------------- summary --------------------------------
-
-print("")
-if #failures > 0 then
-	print(("%d of %d checks FAILED:"):format(#failures, checks))
-	for _, f in ipairs(failures) do print("  - " .. f) end
-	os.exit(1)
-end
-print(("%d checks passed"):format(checks))
-os.exit(0)
-
 
 -- ================== the et.G_CreateEntity() crash ==========================
 --
@@ -879,18 +934,18 @@ test("a starved entity pool builds a smaller reserve instead of G_Error-ing", fu
 
 	check(#engine.gent_create_log == 0, "no entity was created from a nearly-empty pool")
 
-	-- with nothing in the reserve, a throw falls through to the melee stab
+	-- with nothing in the reserve, the command throws nothing
 	local c = player(engine, events, 3, TEAM_ALLIES, PC_SOLDIER, { 0, 0, 0 })
-	local ret, ent = throw(engine, events, 3, WP_KNIFE, 1000)
-	check(ret == 0 and ent == nil, "the throw is passed through (the melee stab runs)")
-	check(c.ps.ammoclip[WP_KNIFE] == KNIFE_CLIP_MAX, "the clip was not spent")
+	local ret, ent = throw(engine, events, 3, WP_KNIFE_KABAR, 1000)
+	check(ret == 0 and ent == nil, "the throw is refused and links nothing")
+	check(c.ps.ammoclip[WP_KNIFE_KABAR] == KNIFE_CLIP_MAX, "the clip was not spent")
 
 	-- a healthy pool serves the same map normally
 	engine.free_entities = nil
 	map_load_reserve(engine)
 	events.trigger("onGameInit", 0, 0, false)
 	check(#engine.gent_create_log == KNIFE_RESERVE_SIZE, "the rebuilt reserve is full")
-	local ret2, ent2 = throw(engine, events, 3, WP_KNIFE, 1200)
+	local ret2, ent2 = throw(engine, events, 3, WP_KNIFE_KABAR, 1200)
 	check(ret2 == 1 and ent2, "and the next throw out of it spawns")
 end)
 
