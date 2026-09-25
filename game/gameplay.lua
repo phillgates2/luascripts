@@ -12,7 +12,9 @@
 --   * poison_needle           - syringe poisons enemies; all classes carry it;
 --                               slot 5 toggles needle <-> pliers / smoke
 --   * soldier_smg_slot2       - soldiers can pull their SMG from slot 2
---   * throwable_knife         - throw knives as pick-up-able projectiles
+--   * throwable_knife         - throw knives as pick-up-able projectiles;
+--                               right-click (weapalt) via the throwknife
+--                               command, left-click stays a melee stab
 --
 -- Install: loaded automatically when WolfAdmin loads via main.lua (no extra
 -- lua_modules entries required).
@@ -121,6 +123,16 @@ local KNIFE_SPAWN_CLASS     = "target_position"
 -- empty pool even at map load, so the pool is never built down past this
 -- margin.
 local KNIFE_MIN_FREE_ENTITIES = 8
+-- Right-click throw. MOUSE2 is "weapalt" (switch to alternate), which the
+-- client consumes locally and never forwards to the server - so Lua cannot
+-- see the key itself. Instead the throw lives on a bindable command:
+--   bind MOUSE2 "weapalt; throwknife"
+-- keeps the normal alternate-fire for every other weapon and throws a knife
+-- only while a knife is in hand. Left-click is then a pure melee stab.
+local KNIFE_THROW_COMMAND   = "throwknife"
+-- Old behaviour was left-click throws (WeaponFire intercepted, melee
+-- swallowed). False keeps that off; true throws on both clicks.
+local KNIFE_THROW_ON_FIRE   = false
 -- Set "g_knifeDebug 1" to announce every engine call on the knife's throw and
 -- flight path to the console and games.log BEFORE it runs. A native crash
 -- (segfault) cannot be caught from Lua - pcall() only protects against the C
@@ -1299,7 +1311,8 @@ function knife.spawn(num, weapon, levelTime)
 	-- et.G_CreateEntity() cannot be used at runtime (see knife.build_pool):
 	-- the throw takes the next parked knife from the reserve instead. An empty
 	-- reserve refuses the throw, which costs no clip and sets no cooldown, so
-	-- the engine falls through to the normal melee stab.
+	-- the fire path falls through to the normal melee stab and the command
+	-- path (right-click) simply does nothing.
 	local ent = knife.acquire()
 	if not ent then return nil end
 	knife.stage("spawn ent " .. ent .. ": s.eType/s.modelindex/owner/box")
@@ -1472,6 +1485,30 @@ function knife.pickup(ent, k, levelTime)
 			end
 		end
 	end
+end
+
+-- Match the right-click throw verb (plus short aliases). "weapalt" itself is
+-- NOT matched here: it is handled separately in on_client_command so that only
+-- a knife in hand claims it and every other weapon keeps its normal alternate.
+function knife.is_throw_command(command)
+	if type(command) ~= "string" then return false end
+	local c = command:lower()
+	if c == KNIFE_THROW_COMMAND then return true end
+	return c == "throwknife" or c == "throwk" or c == "tknife"
+end
+
+-- Shared throw: cooldown, clip, reserve, consume. Returns 1 when a knife left
+-- the hand, 0 when the attack falls through (melee stab on the fire path,
+-- nothing on the command path). An empty reserve costs no clip and sets no
+-- cooldown, like an empty clip.
+function knife.try_throw(num, weapon, levelTime)
+	if not (team_of(num) and is_alive(num)) then return 0 end
+	if next_throw[num] and levelTime < next_throw[num] then return 0 end
+	if knife.clip(num, weapon) <= 0 then return 0 end
+	if not knife.spawn(num, weapon, levelTime) then return 0 end
+	next_throw[num] = levelTime + THROW_COOLDOWN_MS
+	knife.consume(num, weapon)
+	return 1
 end
 
 -- ========================= EVENT HANDLERS ================================
@@ -1766,6 +1803,31 @@ local function on_client_command(clientId, command)
 		return 0
 	end
 
+	-- --- throwable knife (right-click via throwknife) ---
+	-- MOUSE2 is "weapalt", which cgame consumes locally and never forwards,
+	-- so the throw lives on a bindable verb instead:
+	--   bind MOUSE2 "weapalt; throwknife"
+	-- Only a knife in hand claims the key; every other weapon keeps its
+	-- normal alternate-fire. The thrown knife keeps its world model
+	-- (s.modelindex, see knife.spawn) in flight and stuck in walls.
+	if KNIFE_ENABLE then
+		local cmd = command:lower()
+		if knife.is_throw_command(command) or cmd == "weapalt" then
+			local cur = client_get(clientId, "ps.weapon")
+			if cur and KNIVES[cur] then
+				knife.debugging = knife.debug_on()
+				if knife.debugging then
+					knife.stage("ClientCommand client=" .. clientId .. " cmd=" .. cmd
+						.. " weapon=" .. cur .. " clip=" .. tostring(knife.clip(clientId, cur)))
+				end
+				local ok, res = pcall(knife.try_throw, clientId, cur, now_ms())
+				if ok and res == 1 then return 1 end
+				if not ok then err_once("knife_throw_cmd", res) end
+			end
+			return 0
+		end
+	end
+
 	-- --- no-combat-selfkill ---
 	if NOKILL_ENABLE and is_selfkill_cmd(command:lower()) then
 		if team_of(clientId) and is_alive(clientId) then
@@ -1823,7 +1885,7 @@ local function on_damage(target, attacker, damage, damageFlags, meansOfDeath)
 	return 0
 end
 
--- weapon fire event (poison syringe trace + throwable knife + medic block)
+-- weapon fire event (poison syringe trace + throwable knife left-click + medic block)
 local function on_weapon_fire(clientId, weapon)
 	if not enabled then return 0 end
 	clear_no_client(clientId)
@@ -1850,28 +1912,18 @@ local function on_weapon_fire(clientId, weapon)
 		if not ok then err_once("poison_fire", err) end
 	end
 
-	-- throwable knife
+	-- throwable knife (left-click). Right-click throw via the throwknife
+	-- command is the default; left-click stays a pure melee stab unless
+	-- KNIFE_THROW_ON_FIRE re-enables the old intercept.
 	if KNIFE_ENABLE and KNIVES[weapon] then
+		if not KNIFE_THROW_ON_FIRE then return 0 end
 		local intercepted = 0
 		knife.debugging = knife.debug_on()
 		if knife.debugging then
 			knife.stage("et_WeaponFire client=" .. clientId .. " weapon=" .. weapon
 				.. " clip=" .. tostring(knife.clip(clientId, weapon)))
 		end
-		local ok, res = pcall(function()
-			if not (team_of(clientId) and is_alive(clientId)) then return 0 end
-			local now = now_ms()
-			if next_throw[clientId] and now < next_throw[clientId] then return 0 end
-
-			-- Require at least one throw in the clip; if empty, let the
-			-- engine do the normal melee stab (return 0).
-			if knife.clip(clientId, weapon) <= 0 then return 0 end
-
-			if not knife.spawn(clientId, weapon, now) then return 0 end
-			next_throw[clientId] = now + THROW_COOLDOWN_MS
-			knife.consume(clientId, weapon)
-			return 1   -- swallow the melee stab; the thrown knife is the attack
-		end)
+		local ok, res = pcall(knife.try_throw, clientId, weapon, now_ms())
 		if ok then intercepted = res else err_once("knife_fire", res) end
 		return intercepted
 	end
