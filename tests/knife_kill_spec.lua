@@ -234,11 +234,23 @@ local function throw(engine, events, num, weapon, levelTime)
 	return ret, linked
 end
 
--- left-click: firing the knife. With the right-click throw as default this
--- must always fall through to the engine's melee stab (return 0).
+-- left-click: firing the knife (et_WeaponFire). This is the out-of-the-box
+-- throw now - stock clients never forward right-click - so a throw that goes
+-- off is intercepted (return 1) and one the knife refuses (cooldown, empty
+-- clip) falls through to the engine's melee stab (return 0).
 local function fire_knife(engine, events, num, weapon, levelTime)
+	local c = engine.client(num)
+	if c and c.ps then
+		local ammo = c.ps.ammo[weapon] or 0
+		local clip = c.ps.ammoclip[weapon] or 0
+		pcall(et.AddWeaponToPlayer, num, weapon, ammo, clip, 1)
+	end
 	events.trigger("onGameFrame", levelTime)
-	return events.trigger("onWeaponFire", num, weapon)
+	local before = #engine.link_log
+	local ret = events.trigger("onWeaponFire", num, weapon)
+	local linked = #engine.link_log > before
+		and engine.link_log[#engine.link_log].number or nil
+	return ret, linked
 end
 
 -- --------------------------------- tests ---------------------------------
@@ -426,8 +438,9 @@ test("a player who has been stuck may /kill", function()
 end)
 
 -- The thrown knife, from the throw itself. The old code called et.G_Spawn(),
--- which is not in the API, so nothing was ever created. The throw lives on
--- the throwknife command (right-click); left-click stays a melee stab.
+-- which is not in the API, so nothing was ever created. The throw fires on
+-- left-click (et_WeaponFire) out of the box, and on the throwknife verb for
+-- a dedicated right-click bind.
 test("throwing a knife creates a real entity and spends a throw", function()
 	local engine, events = new_server({ sv_maxclients = 16 })
 	check(et.G_Spawn == nil, "the Lua API has no et.G_Spawn() (g_lua.c etlib[])")
@@ -652,7 +665,8 @@ test("a knife sticks in a wall and can be picked up", function()
 end)
 
 -- Rate limiting: one throw per THROW_COOLDOWN_MS, and an empty clip throws
--- nothing (return 0) instead of eating the attack. Left-click always stabs.
+-- nothing (return 0) instead of eating the attack - the melee stab falls
+-- through either way.
 test("the throw cooldown and an empty clip", function()
 	local engine, events = new_server({ sv_maxclients = 16 })
 	local c = player(engine, events, 3, TEAM_ALLIES, PC_SOLDIER, { 0, 0, 0 }, { 0, 0, 0 })
@@ -693,20 +707,36 @@ test("the throw cooldown and an empty clip", function()
 		"throwknife without a knife in hand does nothing")
 end)
 
--- Left-click (WeaponFire) with a knife is a pure melee stab now: it never
--- throws, spends nothing and creates nothing - even with a full clip.
-test("left-click with a knife stabs, it never throws", function()
+-- Left-click (WeaponFire) is the out-of-the-box throw: stock clients never
+-- forward right-click ("weapalt" is consumed by cgame), so the fire hook is
+-- the only click the server sees. A throw the knife refuses (cooldown, empty
+-- clip) falls through to the engine's melee stab (return 0) instead of
+-- eating the attack.
+test("left-click throws the knife, and stabs when it cannot throw", function()
 	local engine, events = new_server({ sv_maxclients = 16 })
 	local c = player(engine, events, 3, TEAM_ALLIES, PC_SOLDIER, { 0, 0, 0 }, { 0, 0, 0 })
 	events.trigger("onGameFrame", 1000)
 	check(c.ps.ammoclip[WP_KNIFE_KABAR] == KNIFE_CLIP_MAX, "the clip starts full")
 
-	local created_before = #engine.gent_create_log
-	local ret = fire_knife(engine, events, 3, WP_KNIFE_KABAR, 1000)
-	check(ret == 0, "firing the knife falls through to the engine's melee stab")
-	check(c.ps.ammoclip[WP_KNIFE_KABAR] == KNIFE_CLIP_MAX, "and spends no throw")
-	check(live_knives(engine) == 0, "and links no knife")
-	check(#engine.gent_create_log == created_before, "and creates no entity")
+	local ret, ent = fire_knife(engine, events, 3, WP_KNIFE_KABAR, 1000)
+	check(ret == 1 and ent ~= nil, "firing the knife throws it")
+	check(c.ps.ammoclip[WP_KNIFE_KABAR] == KNIFE_CLIP_MAX - 1, "and spends a throw")
+	check(live_knives(engine) == 1, "and links one knife")
+
+	-- inside the cooldown the fire falls through to the melee stab
+	local ret2 = fire_knife(engine, events, 3, WP_KNIFE_KABAR, 1000 + THROW_COOLDOWN_MS - 100)
+	check(ret2 == 0, "firing inside the cooldown falls through to the melee stab")
+	check(c.ps.ammoclip[WP_KNIFE_KABAR] == KNIFE_CLIP_MAX - 1, "and spends nothing")
+
+	-- the clip runs out by clicking: left-click is a pure melee stab again
+	for i = 1, KNIFE_CLIP_MAX - 1 do
+		fire_knife(engine, events, 3, WP_KNIFE_KABAR, 2000 + i * (THROW_COOLDOWN_MS + 100))
+	end
+	check(c.ps.ammoclip[WP_KNIFE_KABAR] == 0,
+		"all " .. KNIFE_CLIP_MAX .. " knives are thrown by clicking")
+	check(live_knives(engine) == KNIFE_CLIP_MAX, "and every one of them is linked")
+	local ret3 = fire_knife(engine, events, 3, WP_KNIFE_KABAR, 20000)
+	check(ret3 == 0, "with an empty clip the fire falls through to the melee stab")
 	check(#engine.damage == 0, "the stab itself is the engine's business here")
 end)
 

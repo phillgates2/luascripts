@@ -13,8 +13,12 @@
 --                               slot 5 toggles needle <-> pliers / smoke
 --   * soldier_smg_slot2       - soldiers can pull their SMG from slot 2
 --   * throwable_knife         - throw knives as pick-up-able projectiles;
---                               right-click (weapalt) via the throwknife
---                               command, left-click stays a melee stab
+--                               left-click throws (stock clients never
+--                               forward right-click to the server), and the
+--                               melee stab runs whenever the throw is
+--                               refused; a dedicated right-click throw is
+--                               still bindable:
+--                               bind MOUSE2 "weapalt; throwknife"
 --
 -- Install: loaded automatically when WolfAdmin loads via main.lua (no extra
 -- lua_modules entries required).
@@ -123,16 +127,22 @@ local KNIFE_SPAWN_CLASS     = "target_position"
 -- empty pool even at map load, so the pool is never built down past this
 -- margin.
 local KNIFE_MIN_FREE_ENTITIES = 8
--- Right-click throw. MOUSE2 is "weapalt" (switch to alternate), which the
--- client consumes locally and never forwards to the server - so Lua cannot
--- see the key itself. Instead the throw lives on a bindable command:
+-- The throw verb. MOUSE2 is "weapalt" (switch to alternate), which the client
+-- consumes locally and never forwards to the server - and CG_AltWeapon_f() is
+-- a no-op for a knife (no weapAlts, useClip qfalse), so a stock right-click
+-- does not even reach the engine. The verb exists for players who want a
+-- dedicated throw button again:
 --   bind MOUSE2 "weapalt; throwknife"
 -- keeps the normal alternate-fire for every other weapon and throws a knife
--- only while a knife is in hand. Left-click is then a pure melee stab.
+-- only while a knife is in hand.
 local KNIFE_THROW_COMMAND   = "throwknife"
--- Old behaviour was left-click throws (WeaponFire intercepted, melee
--- swallowed). False keeps that off; true throws on both clicks.
-local KNIFE_THROW_ON_FIRE   = false
+-- Left-click throw (et_WeaponFire) - the only click a stock client forwards,
+-- so this is what makes the feature work out of the box. The fire hook throws
+-- and falls through to the engine's melee stab whenever the throw is refused
+-- (cooldown, empty clip, dry reserve). False turns the fire hook off and
+-- leaves throwing to the bindable verb above, making left-click a pure melee
+-- stab again.
+local KNIFE_THROW_ON_FIRE   = true
 -- Set "g_knifeDebug 1" to announce every engine call on the knife's throw and
 -- flight path to the console and games.log BEFORE it runs. A native crash
 -- (segfault) cannot be caught from Lua - pcall() only protects against the C
@@ -1803,11 +1813,11 @@ local function on_client_command(clientId, command)
 		return 0
 	end
 
-	-- --- throwable knife (right-click via throwknife) ---
-	-- MOUSE2 is "weapalt", which cgame consumes locally and never forwards,
-	-- so the throw lives on a bindable verb instead:
-	--   bind MOUSE2 "weapalt; throwknife"
-	-- Only a knife in hand claims the key; every other weapon keeps its
+	-- --- throwable knife (the bindable verb) ---
+	-- The out-of-the-box throw is left-click via et_WeaponFire below. This is
+	-- the optional dedicated verb for "bind MOUSE2 \"weapalt; throwknife\""
+	-- (MOUSE2's "weapalt" is consumed by cgame and never forwarded).
+	-- Only a knife in hand claims the verb; every other weapon keeps its
 	-- normal alternate-fire. The thrown knife keeps its world model
 	-- (s.modelindex, see knife.spawn) in flight and stuck in walls.
 	if KNIFE_ENABLE then
@@ -1912,9 +1922,11 @@ local function on_weapon_fire(clientId, weapon)
 		if not ok then err_once("poison_fire", err) end
 	end
 
-	-- throwable knife (left-click). Right-click throw via the throwknife
-	-- command is the default; left-click stays a pure melee stab unless
-	-- KNIFE_THROW_ON_FIRE re-enables the old intercept.
+	-- throwable knife (left-click). et_WeaponFire is the only click a stock
+	-- client forwards (right-click's "weapalt" is consumed by cgame), so this
+	-- is the out-of-the-box throw. A refused throw (try_throw returns 0 -
+	-- cooldown, empty clip, dry reserve) falls through to the engine's melee
+	-- stab instead of eating the attack.
 	if KNIFE_ENABLE and KNIVES[weapon] then
 		if not KNIFE_THROW_ON_FIRE then return 0 end
 		local intercepted = 0

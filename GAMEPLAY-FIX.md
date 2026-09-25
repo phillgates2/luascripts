@@ -1114,3 +1114,82 @@ Mutation-tested: 16 mutations - the threshold comparison, the `no > 1` rule, the
 `VOTE_TIME` constant, the percent clamp, the auto-yes, the referee check, the
 `vote_limit` comparison, the alias table, the strictness rejections, the
 `TEAM_AXIS_SC`-to-number mapping - each fail the suite.
+
+## 12. Follow-up: "throw knife not working" - the right-click that never reaches the server
+
+Symptom from the server: the throwable knife still cannot be thrown in normal
+play - every part of §8.2 and the crash fix in place, every suite green, and
+`tests/live_sim.lua` proving the whole server-side chain end to end.
+
+### 12.1 Root cause: stock clients never forward right-click
+
+`etmain/default.cfg:18` binds `MOUSE2` to `weapalt`. `Cmd_ExecuteString()`
+(`qcommon/cmd.c`) resolves that through the command table, whose NULL-fn
+placeholders `break` into `CL_GameCommand()` → `CG_ConsoleCommand()` →
+`CG_AltWeapon_f()` (`cgame/cg_weapons.c:3444`). That function runs entirely
+client-side and its `qtrue` return means `CL_ForwardCommandToServer()`
+(`cl_main.c:648`) is never reached. For a weapon with no `weapAlts` (the knife:
+`weapAlts = WP_NONE`, `useClip = qfalse`) `CG_AltWeapon_f()` then does **nothing
+at all** - `cg_weapaltReloads` has no clip to reload and the `cg_quickchat`
+fallback covers only the dynamite/satchel cases.
+
+Consequences on the server:
+
+- `cmd == "weapalt"` in `on_client_command` was dead code on every stock client
+  (2.60b and ET:Legacy alike).
+- The documented escape - `bind MOUSE2 "weapalt; throwknife"` - works, because
+  `throwknife` is unknown to cmd_functions, cvars and cgame and therefore gets
+  forwarded as a server command. But it is per-player client configuration that
+  nothing in the game ever told players about.
+- `KNIFE_THROW_ON_FIRE = false` deliberately kept left-click a pure melee stab.
+
+Net effect for a player with stock binds: **no input threw the knife at all** -
+exactly "throw knife not working". The specs could not see it because they drive
+`client_command(..., "weapalt")` and `"throwknife"` directly at the
+`et_ClientCommand()` boundary - commands a stock client never sends - and one of
+them asserted "left-click ... never throws".
+
+### 12.2 The rest of the chain was verified correct first
+
+Before touching the UX, everything the throw needs was checked against ET:Legacy
+master (`/tmp/etlegacy`) and exercised by `tests/live_sim.lua` (which runs
+`main.lua`'s real `et_SpawnEntitiesFromString` reserve builder under
+engine-true gaps: no `ps.viewheight` in `gclient_fields`, no `et.MAX_GENTITIES`):
+
+- `FireWeapon()` calls `G_LuaHook_WeaponFire()` for **every** weapon with a
+  `weapFireTable[]` entry - the knife included (`g_weapon.c:4373`, before
+  `Weapon_Knife()` at `:61`). So `et_WeaponFire` does see a left-click stab.
+- `et.trap_Trace`'s prototype is `(start, mins, maxs, endPos, entNum, mask)`
+  (`g_lua.c:2334`) - exactly what `knife.trace()` passes.
+- `ps.ammo`/`ps.ammoclip` are `int[64]` (`net_uint16_t` is `typedef int`; the
+  KABAR's index 48 is in range), `G_LuaCreateEntity`'s map-load window, the
+  spawn clip grant, and both knives' model paths all check out.
+
+### 12.3 The fix: throw on the one click the server sees
+
+`KNIFE_THROW_ON_FIRE = true` (`game/gameplay.lua`). `et_WeaponFire` is the only
+activation a stock client forwards, so the fire hook is now the out-of-the-box
+throw. The melee stab is preserved as the fall-through that was already coded:
+`knife.try_throw()` returns `0` for every refusal (800 ms cooldown, empty clip,
+dry reserve, dead/spectator), and `0` from `et_WeaponFire` passes the attack on
+to `Weapon_Knife()`. A throw that goes off returns `1` and eats the stab.
+
+The bindable verb stays. Players who want a dedicated right-click throw keep
+
+```
+bind MOUSE2 "weapalt; throwknife"
+```
+
+and a server that wants the old pure-melee left-click sets
+`KNIFE_THROW_ON_FIRE = false` and uses the bind.
+
+### 12.4 Tests
+
+- `tests/knife_kill_spec.lua`: "left-click throws the knife, and stabs when it
+  cannot throw" replaces "left-click with a knife stabs, it never throws" (182
+  checks).
+- `tests/live_sim.lua`: a fourth case drives `onWeaponFire` with main.lua's real
+  reserve and the engine-true field gaps - throw goes off with no client bind,
+  a second fire inside the cooldown falls through to melee (26 checks).
+- All suites green: audit_fix 70, botvote 184, doublejump 64, gameplay 38,
+  honors 34, slot5_engine 20, knife_kill 182, live_sim 26.
