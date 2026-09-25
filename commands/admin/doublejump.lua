@@ -71,7 +71,7 @@ function commandDoubleJump(clientId, command, action, ...)
             return true
         end
 
-        et.trap_SendConsoleCommand(et.EXEC_APPEND, "cchat -1 \"^ddoublejump: ^9trigger mode is now ^7"..mode.."^9.\";")
+        et.trap_SendConsoleCommand(et.EXEC_APPEND, "cchat -1 \"^ddoublejump: ^9trigger mode is now ^7"..mode.."^9."..((mode == "command") and " ^9Players must bind ^3djump^9 - ^3bind MOUSE3 djump^9, or one quoted ^3+moveup;djump^9 on the jump key." or "").."\";")
 
         return true
     elseif action == "window" or action == "boost" then

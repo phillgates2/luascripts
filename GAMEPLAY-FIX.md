@@ -1114,3 +1114,146 @@ Mutation-tested: 16 mutations - the threshold comparison, the `no > 1` rule, the
 `VOTE_TIME` constant, the percent clamp, the auto-yes, the referee check, the
 `vote_limit` comparison, the alias table, the strictness rejections, the
 `TEAM_AXIS_SC`-to-number mapping - each fail the suite.
+
+## 12. Follow-up: "throw knife not working" - the right-click that never reaches the server
+
+Symptom from the server: the throwable knife still cannot be thrown in normal
+play - every part of §8.2 and the crash fix in place, every suite green, and
+`tests/live_sim.lua` proving the whole server-side chain end to end.
+
+### 12.1 Root cause: stock clients never forward right-click
+
+`etmain/default.cfg:18` binds `MOUSE2` to `weapalt`. `Cmd_ExecuteString()`
+(`qcommon/cmd.c`) resolves that through the command table, whose NULL-fn
+placeholders `break` into `CL_GameCommand()` → `CG_ConsoleCommand()` →
+`CG_AltWeapon_f()` (`cgame/cg_weapons.c:3444`). That function runs entirely
+client-side and its `qtrue` return means `CL_ForwardCommandToServer()`
+(`cl_main.c:648`) is never reached. For a weapon with no `weapAlts` (the knife:
+`weapAlts = WP_NONE`, `useClip = qfalse`) `CG_AltWeapon_f()` then does **nothing
+at all** - `cg_weapaltReloads` has no clip to reload and the `cg_quickchat`
+fallback covers only the dynamite/satchel cases.
+
+Consequences on the server:
+
+- `cmd == "weapalt"` in `on_client_command` was dead code on every stock client
+  (2.60b and ET:Legacy alike).
+- The documented escape - `bind MOUSE2 "weapalt; throwknife"` - works, because
+  `throwknife` is unknown to cmd_functions, cvars and cgame and therefore gets
+  forwarded as a server command. But it is per-player client configuration that
+  nothing in the game ever told players about.
+- `KNIFE_THROW_ON_FIRE = false` deliberately kept left-click a pure melee stab.
+
+Net effect for a player with stock binds: **no input threw the knife at all** -
+exactly "throw knife not working". The specs could not see it because they drive
+`client_command(..., "weapalt")` and `"throwknife"` directly at the
+`et_ClientCommand()` boundary - commands a stock client never sends - and one of
+them asserted "left-click ... never throws".
+
+### 12.2 The rest of the chain was verified correct first
+
+Before touching the UX, everything the throw needs was checked against ET:Legacy
+master (`/tmp/etlegacy`) and exercised by `tests/live_sim.lua` (which runs
+`main.lua`'s real `et_SpawnEntitiesFromString` reserve builder under
+engine-true gaps: no `ps.viewheight` in `gclient_fields`, no `et.MAX_GENTITIES`):
+
+- `FireWeapon()` calls `G_LuaHook_WeaponFire()` for **every** weapon with a
+  `weapFireTable[]` entry - the knife included (`g_weapon.c:4373`, before
+  `Weapon_Knife()` at `:61`). So `et_WeaponFire` does see a left-click stab.
+- `et.trap_Trace`'s prototype is `(start, mins, maxs, endPos, entNum, mask)`
+  (`g_lua.c:2334`) - exactly what `knife.trace()` passes.
+- `ps.ammo`/`ps.ammoclip` are `int[64]` (`net_uint16_t` is `typedef int`; the
+  KABAR's index 48 is in range), `G_LuaCreateEntity`'s map-load window, the
+  spawn clip grant, and both knives' model paths all check out.
+
+### 12.3 The fix: throw on the one click the server sees
+
+`KNIFE_THROW_ON_FIRE = true` (`game/gameplay.lua`). `et_WeaponFire` is the only
+activation a stock client forwards, so the fire hook is now the out-of-the-box
+throw. The melee stab is preserved as the fall-through that was already coded:
+`knife.try_throw()` returns `0` for every refusal (800 ms cooldown, empty clip,
+dry reserve, dead/spectator), and `0` from `et_WeaponFire` passes the attack on
+to `Weapon_Knife()`. A throw that goes off returns `1` and eats the stab.
+
+The bindable verb stays. Players who want a dedicated right-click throw keep
+
+```
+bind MOUSE2 "weapalt; throwknife"
+```
+
+and a server that wants the old pure-melee left-click sets
+`KNIFE_THROW_ON_FIRE = false` and uses the bind.
+
+### 12.4 Tests
+
+- `tests/knife_kill_spec.lua`: "left-click throws the knife, and stabs when it
+  cannot throw" replaces "left-click with a knife stabs, it never throws" (182
+  checks).
+- `tests/live_sim.lua`: a fourth case drives `onWeaponFire` with main.lua's real
+  reserve and the engine-true field gaps - throw goes off with no client bind,
+  a second fire inside the cooldown falls through to melee (26 checks).
+- All suites green: audit_fix 70, botvote 184, doublejump 64, gameplay 38,
+  honors 34, slot5_engine 20, knife_kill 182, live_sim 26.
+
+## 13. Follow-up: "double jump not working" - the bind nobody had and the probe that missed the floor
+
+Symptom from the server: pressing jump twice does nothing, though `g_doublejump`
+is 1 and the module loads cleanly - its own 64-check suite was already green.
+
+Three findings, verified against ET:Legacy master (g_lua.c, bg_pmove.c, cmd.c,
+cg_servercmds.c):
+
+1. **The default mode needs a bind no player has.** `g_doublejump_mode`
+   defaults to `command`: the second jump is requested with the client command
+   `djump`, which only fires from a key the player bound themselves -
+   `bind SPACE "+moveup;djump"` (jaymod's tap-jump-twice) or `bind MOUSE3
+   djump`. A jump press in mid air is invisible to Lua: etlib exposes no
+   usercmd state, and PMF_JUMP_HELD is set only in PM_CheckJump(), which
+   PM_WalkMove() calls on the ground and PM_AirMove() does not (bg_pmove.c:782,
+   :1327); PmoveSingle() clears it on key-up (:5214) and an air press sets
+   nothing again. Stock players pressing jump twice therefore get exactly
+   nothing - the same defect class as the throw knife's dead right-click (§12).
+
+2. **The one hint was invisible - and broken anyway.** `announce()` sent a
+   console `print` once per connect, unseen in normal play, and the line
+   truncated at the first escaped quote it tried to show: the client's command
+   tokenizer has no `\"` escapes (cmd.c, "this doesn't handle \" escaping") and
+   cp/cpm/print all read CG_Argv(1) only (cg_servercmds.c:3107). A `"` character
+   cannot travel through any server text at all, so the jump-key bind line can
+   never be shown verbatim in game.
+
+3. **The ground probe measured from the wrong point.** The player box's z mins
+   is -24 (bg_pmove.c:427): `ps.origin` floats 24 units above the soles.
+   `isAirborne()` probed around `ps.origin`, a few units of mid-air, so every
+   player read as airborne all the time and `check()`'s "on the ground" refusal
+   was dead code. The stub suite never caught it: `tests/doublejump_spec.lua`
+   placed standing players at `origin == floor`, an origin-at-feet convention
+   the engine does not use.
+
+Fix (the requested UX - jaymod-style jump-tap, with the bind pushed):
+
+- The bind is now pushed where it cannot be missed: at the first spawn the
+  player gets the hint twice - a centre print (`cp`) and a message-line copy
+  (`cpm`, which also lands in the console for copying). `g_doublejump_announce
+  0` keeps it quiet. Since server text cannot show quote characters, the hint
+  shows the runnable `bind MOUSE3 djump` verbatim and describes the jump-key
+  bind in words ("bind your jump key to +moveup;djump as one quoted command");
+  the exact line is spelled out in the module header and above:
+  `bind SPACE "+moveup;djump"`.
+- `!doublejump mode command` repeats the requirement in the chat output.
+- `isAirborne()` probes at the soles (`FEET_OFFSET = 24` below `ps.origin`), so
+  the ground refusal answers honestly in real play: a `djump` mashed with the
+  ground jump is turned away ("no take-off seen yet" - the frame poll has not
+  latched the take-off yet - or "on the ground") and cannot spend the one air
+  jump, and ground crouches no longer fire the crouch mode.
+- The spec moved to engine-truth geometry (standing `origin z = 24` over a
+  `z = 0` floor), so the ground checks pin the offset: probing at the origin
+  again now fails "standing on the floor, djump does nothing".
+
+Not changed: `command` stays the default mode, the jaymod numbers stand (850 ms
+window, 1.4 boost, one air jump per airtime), and single jumps are untouched -
+the module only ever writes `ps.velocity` in `apply()`.
+
+Verification: `/tmp/lua54 tests/<name>.lua`, all green - doublejump 67 (three
+new checks: the hint arrives as `cp` + `cpm` and never as a bare console
+`print`), knife_kill 182, live_sim 26, gameplay 38, audit_fix 70, botvote 184,
+honors 34, slot5_engine 20.
