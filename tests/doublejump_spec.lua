@@ -3,13 +3,22 @@
 --
 -- What the module cannot do is worth repeating here, because it decides the
 -- shape of every test below: ET:Legacy's Lua API has no usercmd access at all
--- (etlib[] in g_lua.c has no trap_GetUsercmd and no button state), and the
--- engine only sets PMF_JUMP_HELD in PM_CheckJump(), which never runs off the
--- ground. A jump press in mid air is invisible to Lua. So the module watches
+-- (no trap_GetUsercmd, and no button or upmove field in g_lua.c's tables), and
+-- the engine only sets PMF_JUMP_HELD in PM_CheckJump(), which never runs off
+-- the ground. A jump press in mid air is invisible to Lua, and "+moveup" is a
+-- client-side command (cl_input.c), so it never reaches et_ClientCommand()
+-- either - and a stock client drops the server commands it does not know, so
+-- the bind cannot be pushed to a player from here either. So the module watches
 -- the take-off (PMF_JUMP_HELD rising, or ps.velocity[3] snapping back up to
 -- JUMP_VELOCITY for a player who keeps jump held) and applies jaymod's boosted
--- jump itself when the player asks for it with the "djump" client command,
--- ducks in the air, or - in auto mode - the moment they leave the ground.
+-- jump itself.
+--
+-- By default it applies it the moment the player leaves the ground, because
+-- that is the one trigger that asks nothing of them: jump, and the extra jump is
+-- there. The two gated triggers are still here and still tested - the "djump"
+-- client command, which is jaymod's own tap-jump-twice for the players who have
+-- bound a key to it, and a duck in mid air - and every spec that exercises one
+-- of them says so with set_mode(), because the default no longer gates.
 --
 -- The engine stub models the parts that matter: FIELD_VEC3 takes one table,
 -- ps.pm_flags/ps.eFlags/ps.pm_type/noclip are read-only, and trap_Trace() is a
@@ -147,6 +156,16 @@ local function frame(server, t)
 	return t
 end
 
+-- The default trigger is auto: the take-off is boosted and nothing is asked of
+-- the player. The specs for the two gated triggers switch the server to the
+-- mode that gates them - command, jaymod's own tap-jump-twice, which needs a
+-- bind the player makes once, and crouch, which needs no bind and gives up
+-- air-crouching. Every new_server() is a fresh engine, so the mode comes back
+-- to the default between tests without being put back.
+local function set_mode(mode)
+	et.trap_Cvar_Set("g_doublejump_mode", mode)
+end
+
 -- what the engine's own state looks like at the moment PM_Jump() succeeds
 local function takeoff(server, num, t)
 	local c = server.engine.client(num)
@@ -204,13 +223,104 @@ test("the module registers with the engine the way main.lua loads it", function(
 	check(type(server.doublejump.onclientcommand) == "function", "it owns the djump command")
 	check(admin["doublejump"] ~= nil, "!doublejump registered its handler")
 	check(server.doublejump.isEnabled(), "on by default")
-	check(server.doublejump.getMode() == "command", "and in command mode")
+	check(server.doublejump.getMode() == "auto", "and in auto mode, the one that asks nothing of the player")
+	check(server.doublejump.getStatus().needsBind == false, "so no bind is expected of anybody")
 	check(server.doublejump.getWindow() == WINDOW, "jaymod's 850 ms window")
 	check(server.doublejump.getBoost() == BOOST, "jaymod's 1.4 multiplier")
 end)
 
-test("a jump in the air within the window is boosted", function()
+test("auto is the default: jump, and the extra jump is already there", function()
 	local server = new_server({ sv_maxclients = 8 })
+	player(server, 1, 1, { 0, 0, 24 })
+
+	check(server.doublejump.getMode() == "auto", "no cvar was written to get here")
+
+	-- the player presses jump. That is the whole input: no bind, no second key
+	takeoff(server, 1, 1050)
+	check(vz(server, 1) == JUMP_VELOCITY * BOOST, "the take-off left the ground boosted")
+
+	-- ... and presses it again in mid air, which is the press the server cannot
+	-- see. Nothing is lost by it and nothing is doubled
+	inAir(server, 1, 1100, 60, 300)
+	djump(server, 1)
+	check(vz(server, 1) == 300, "a second press does not add a third jump")
+	check(sentTo(server, 1):find("automatic", 1, true) ~= nil,
+		"and a player who did bind djump is told the server does it for them")
+
+	-- landing and jumping again is boosted the same way, so a player who presses
+	-- jump twice gets two boosted jumps and never has to press anything else
+	server.engine.place(1, { 0, 0, 24 })
+	server.engine.client(1).ps.velocity = { 0, 0, -300 }
+	frame(server, 2000)
+
+	takeoff(server, 1, 2050)
+	check(vz(server, 1) == JUMP_VELOCITY * BOOST, "and so is the next jump off the floor")
+
+	-- the master switch still outranks the default mode
+	et.trap_Cvar_Set("g_doublejump", "0")
+	server.engine.place(1, { 0, 0, 24 })
+	server.engine.client(1).ps.velocity = { 0, 0, -300 }
+	frame(server, 3000)
+
+	takeoff(server, 1, 3050)
+	check(vz(server, 1) == JUMP_VELOCITY, "g_doublejump 0 leaves the take-off alone")
+end)
+
+test("auto mode leaves the upward pushes it did not cause alone", function()
+	local server = new_server({ sv_maxclients = 8 })
+	player(server, 1, 1, { 0, 0, 24 })
+	player(server, 2, 3, { 200, 0, 24 })
+
+	-- !throw, !fling and !launch write 700 to 1200 straight up
+	-- (commands/admin/throw.lua, and throwall.lua for everybody at once). Read as
+	-- take-offs, those would be rewritten to the boosted jump and quietly halved.
+	server.engine.place(1, { 0, 0, 64 })
+	server.engine.client(1).ps.velocity = { 0, 0, 900 }
+	frame(server, 1050)
+	check(vz(server, 1) == 900, "!throw's 900 is not a take-off")
+
+	server.engine.client(1).ps.velocity = { 0, 0, 1200 }
+	frame(server, 1100)
+	check(vz(server, 1) == 1200, "and neither is !launch's 1200")
+
+	-- a spectator flying up through the map is inside the band at this speed, so
+	-- it is the player rules, not the band, that keep the write off them
+	server.engine.client(2).ps.pm_type = PM_SPECTATOR
+	server.engine.place(2, { 200, 0, 300 })
+	server.engine.client(2).ps.velocity = { 0, 0, 250 }
+	frame(server, 1150)
+	check(vz(server, 2) == 250, "a spectator flying up is left alone")
+
+	-- a jump is still a jump: at the impulse itself, and one frame of gravity
+	-- off it (270 - 800 * 0.05), which is what the poll actually sees
+	takeoff(server, 1, 1200)
+	check(vz(server, 1) == JUMP_VELOCITY * BOOST, "a jump off the floor is still boosted")
+
+	server.engine.place(1, { 0, 0, 24 })
+	server.engine.client(1).ps.velocity = { 0, 0, -300 }
+	frame(server, 2000)
+
+	-- and a bunny hop, where the key never comes up so there is no rising edge
+	-- to see and the impulse is all there is. The boosted 378 of the jump above
+	-- decays back through the band on the way to the apex; the latch is what
+	-- stops that descent reading as another take-off and boosting the player
+	-- again, forever
+	server.engine.place(1, { 0, 0, 60 })
+	server.engine.client(1).ps.velocity = { 0, 0, JUMP_VELOCITY - 40 }
+	frame(server, 2050)
+	check(vz(server, 1) == JUMP_VELOCITY * BOOST, "a bunny hop is boosted too, off the impulse alone")
+
+	server.engine.client(1).ps.velocity = { 0, 0, BOOST * JUMP_VELOCITY }
+	frame(server, 2100)
+	server.engine.client(1).ps.velocity = { 0, 0, JUMP_VELOCITY + 40 }
+	frame(server, 2150)
+	check(vz(server, 1) == JUMP_VELOCITY + 40,
+		"and the boost decaying back through the band is not read as a new take-off")
+end)
+
+test("command mode: a jump in the air within the window is boosted", function()
+	local server = new_server({ sv_maxclients = 8 })
+	set_mode("command")
 	player(server, 1, 1, { 0, 0, 24 })
 
 	takeoff(server, 1, 1050)
@@ -226,8 +336,9 @@ test("a jump in the air within the window is boosted", function()
 	check(v[1] == 0 and v[2] == 0, "and the horizontal momentum is left alone")
 end)
 
-test("only one extra jump per time in the air", function()
+test("command mode: only one extra jump per time in the air", function()
 	local server = new_server({ sv_maxclients = 8 })
+	set_mode("command")
 	player(server, 1, 1, { 0, 0, 24 })
 
 	takeoff(server, 1, 1050)
@@ -248,8 +359,9 @@ test("only one extra jump per time in the air", function()
 	check(vz(server, 1) == 300, "and the boosted velocity is not mistaken for a new take-off")
 end)
 
-test("the window closes 850 ms after the take-off", function()
+test("command mode: the window closes 850 ms after the take-off", function()
 	local server = new_server({ sv_maxclients = 8 })
+	set_mode("command")
 	player(server, 1, 1, { 0, 0, 24 })
 
 	takeoff(server, 1, 1050)
@@ -263,8 +375,9 @@ test("the window closes 850 ms after the take-off", function()
 	check(vz(server, 1) == 100, "past the window it is refused")
 end)
 
-test("a player on the ground does not get an air jump", function()
+test("command mode: a player on the ground does not get an air jump", function()
 	local server = new_server({ sv_maxclients = 8 })
+	set_mode("command")
 	player(server, 1, 1, { 0, 0, 24 })
 
 	takeoff(server, 1, 1050)
@@ -281,6 +394,7 @@ end)
 
 test("jaymod's other refusals: prone, dead, respawned, spectating", function()
 	local server = new_server({ sv_maxclients = 8 })
+	set_mode("command")
 	player(server, 1, 1, { 0, 0, 24 })
 	player(server, 2, 3, { 200, 0, 24 })
 	player(server, 3, 2, { 400, 0, 24 })
@@ -324,8 +438,9 @@ test("jaymod's other refusals: prone, dead, respawned, spectating", function()
 	check(vz(server, 3) == JUMP_VELOCITY * BOOST, "an allied player gets the same jump")
 end)
 
-test("a bunny hop with the jump key held down still counts as a take-off", function()
+test("command mode: a bunny hop with the jump key held down still counts as a take-off", function()
 	local server = new_server({ sv_maxclients = 8 })
+	set_mode("command")
 	player(server, 1, 1, { 0, 0, 24 })
 
 	-- first jump: the flag rises
@@ -352,9 +467,9 @@ end)
 
 test("crouch mode fires on a duck in mid air", function()
 	local server = new_server({ sv_maxclients = 8 })
+	set_mode("crouch")
 	player(server, 1, 1, { 0, 0, 24 })
 
-	et.trap_Cvar_Set("g_doublejump_mode", "crouch")
 	check(server.doublejump.getMode() == "crouch", "the mode cvar is read live")
 
 	takeoff(server, 1, 1050)
@@ -372,31 +487,11 @@ test("crouch mode fires on a duck in mid air", function()
 	-- holding the duck does not fire it twice
 	frame(server, 1200)
 	check(vz(server, 1) == JUMP_VELOCITY * BOOST, "one duck, one jump")
-
-	et.trap_Cvar_Set("g_doublejump_mode", "command")
 end)
 
-test("auto mode boosts every take-off and refuses the key", function()
+test("command mode: g_doublejump 0 turns the whole thing off", function()
 	local server = new_server({ sv_maxclients = 8 })
-	player(server, 1, 1, { 0, 0, 24 })
-
-	et.trap_Cvar_Set("g_doublejump_mode", "auto")
-	check(server.doublejump.getMode() == "auto", "the mode cvar is read live")
-
-	takeoff(server, 1, 1050)
-	check(vz(server, 1) == JUMP_VELOCITY * BOOST, "the take-off left the ground boosted")
-
-	inAir(server, 1, 1100, 60, 300)
-	djump(server, 1)
-	check(vz(server, 1) == 300, "no second input does anything")
-	check(sentTo(server, 1):find("automatic", 1, true) ~= nil,
-		"and the player is told the server does it for them")
-
-	et.trap_Cvar_Set("g_doublejump_mode", "command")
-end)
-
-test("g_doublejump 0 turns the whole thing off", function()
-	local server = new_server({ sv_maxclients = 8 })
+	set_mode("command")
 	player(server, 1, 1, { 0, 0, 24 })
 
 	et.trap_Cvar_Set("g_doublejump", "0")
@@ -434,13 +529,22 @@ test("!doublejump toggles, reports and retunes", function()
 	check(consoleText(server):find("window", 1, true) ~= nil
 		and consoleText(server):find("850", 1, true) ~= nil, "status reports the window")
 	check(consoleText(server):find("1.4", 1, true) ~= nil, "and the boost")
+	check(consoleText(server):find("nothing for players to bind", 1, true) ~= nil,
+		"and, in the mode the server ships in, that players have nothing to bind")
 
 	admin["doublejump"].fn(0, "doublejump", "mode", "crouch")
 	check(et.trap_Cvar_Get("g_doublejump_mode") == "crouch", "!doublejump mode writes the cvar")
 	admin["doublejump"].fn(0, "doublejump", "mode", "sideways")
 	check(et.trap_Cvar_Get("g_doublejump_mode") == "crouch", "an unknown mode is refused")
 	check(consoleText(server):find("no such mode", 1, true) ~= nil, "and explained")
+
+	admin["doublejump"].fn(0, "doublejump", "mode", "auto")
+	check(consoleText(server):find("no bind and no second press", 1, true) ~= nil,
+		"switching to auto says that nothing is asked of the players")
+
 	admin["doublejump"].fn(0, "doublejump", "mode", "command")
+	check(consoleText(server):find("Players must bind", 1, true) ~= nil,
+		"and switching to command says what that mode costs them")
 
 	admin["doublejump"].fn(0, "doublejump", "boost", "2")
 	check(server.doublejump.getBoost() == 2, "!doublejump boost retunes the jump")
@@ -453,6 +557,8 @@ test("!doublejump toggles, reports and retunes", function()
 
 	admin["doublejump"].fn(0, "doublejump")
 	check(consoleText(server):find("doublejump:", 1, true) ~= nil, "no argument reports the status")
+	check(consoleText(server):find("once, which nothing on the server can do for them", 1, true) ~= nil,
+		"and in command mode the status still carries the bind requirement")
 	admin["doublejump"].fn(0, "doublejump", "sideways")
 	check(consoleText(server):find("doublejump usage", 1, true) ~= nil,
 		"and an argument that is not an action prints the usage")
@@ -465,8 +571,9 @@ test("!doublejump toggles, reports and retunes", function()
 	check(vz(server, 1) == JUMP_VELOCITY * 1.4, "back to jaymod's numbers")
 end)
 
-test("players are told how to bind it, once", function()
+test("command mode: players are told how to bind it, once", function()
 	local server = new_server({ sv_maxclients = 8 })
+	set_mode("command")
 	player(server, 1, 1, { 0, 0, 24 })
 
 	server.events.trigger("onPlayerSpawn", 1, false)
@@ -490,8 +597,29 @@ test("players are told how to bind it, once", function()
 	check(sentTo(quiet, 2) == "", "g_doublejump_announce 0 keeps quiet")
 end)
 
-test("a disconnect and a spawn clear the bookkeeping", function()
+test("in the default mode players are told there is nothing to bind", function()
 	local server = new_server({ sv_maxclients = 8 })
+	player(server, 1, 1, { 0, 0, 24 })
+
+	check(server.doublejump.getMode() == "auto", "this is the server as it ships")
+
+	server.events.trigger("onPlayerSpawn", 1, false)
+	check(sentTo(server, 1):find("djump", 1, true) == nil, "so no bind is pushed on anybody")
+	check(sentTo(server, 1):find("Nothing to bind", 1, true) ~= nil, "and the hint says so instead")
+	check(sentTo(server, 1):find("boosted", 1, true) ~= nil, "it says what the jump does")
+	check(sentTo(server, 1):find("cpm \"", 1, true) ~= nil,
+		"on the message line as well as the centre print")
+	check(sentTo(server, 1):find("print ", 1, true) == nil,
+		"and still not as a console print, which scrolls past unseen")
+
+	server.engine.commands = {}
+	server.events.trigger("onPlayerSpawn", 1, true)
+	check(sentTo(server, 1) == "", "once per map, not once per respawn")
+end)
+
+test("command mode: a disconnect and a spawn clear the bookkeeping", function()
+	local server = new_server({ sv_maxclients = 8 })
+	set_mode("command")
 	player(server, 1, 1, { 0, 0, 24 })
 
 	takeoff(server, 1, 1050)
