@@ -43,6 +43,12 @@
 -- gent_free_log / models record what the module asked the engine to do, and
 -- stub.wolfadmin_client_command() stands in for commands/commands.lua's
 -- handler, which main.lua registers before game.gameplay's.
+--
+-- et.RegisterModname() and the et.EXEC_* constants are here for
+-- tests/init_guard_spec.lua, which loads the real main.lua: et_InitGame()
+-- calls both (_et_RegisterModname() only copies the string into vm->mod_name;
+-- EXEC_NOW/EXEC_INSERT/EXEC_APPEND are cbufExec_t in q_shared.h) and a module
+-- that gets them wrong must fail the test, not pass silently.
 
 local stub = {}
 
@@ -525,6 +531,9 @@ function stub.new(opts)
 	et = {
 		MAX_CLIENTS = MAX_CLIENTS,
 		MAX_GENTITIES = MAX_GENTITIES,
+		-- cbufExec_t (q_shared.h), registered by g_lua.c's registerConstants():
+		-- a module must pass one of these to trap_SendConsoleCommand()
+		EXEC_NOW = 0, EXEC_INSERT = 1, EXEC_APPEND = 2,
 		STAT_HEALTH = 0,
 		TEAM_FREE = 0, TEAM_AXIS = 1, TEAM_ALLIES = 2, TEAM_SPECTATOR = 3,
 		CONTENTS_SOLID = CONTENTS_SOLID, CONTENTS_MISSILECLIP = CONTENTS_MISSILECLIP,
@@ -559,6 +568,17 @@ function stub.new(opts)
 			return engine.free_entities or 512
 		end,
 		G_SoundIndex = function() return 1 end,
+		-- _et_RegisterModname() (g_lua.c) only copies the string into
+		-- vm->mod_name - it prints nothing and touches no console. Lua's
+		-- luaL_checkstring() raises on a non-string argument, so the module
+		-- gets the same error the engine would produce.
+		RegisterModname = function(name)
+			if type(name) ~= "string" then
+				error("bad argument #1 to 'RegisterModname' (string expected, got " .. type(name) .. ")", 0)
+			end
+			engine.modname = name
+			return 0
+		end,
 		trap_Cvar_Get = function(name) return engine.cvars[name] or "" end,
 		trap_Cvar_Set = function(name, value) engine.cvars[name] = tostring(value) end,
 		trap_Milliseconds = function()

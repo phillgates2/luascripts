@@ -298,7 +298,7 @@ engine calls that decide everything.
 `commands.commands` (line 137) before `game.gameplay` (line 143), so
 `commands.onClientCommand()` is handler #1 on the bus - and it ends in an
 unconditional `return 0` (`commands/commands.lua:349`). `et_ClientCommand()`
-returns whatever `events.trigger()` returns (`main.lua:191`), so that 0 went
+returns whatever `events.trigger()` returns (`main.lua:303`), so that 0 went
 straight back to `ClientCommand()`, which runs `G_LuaHook_ClientCommand()`
 *before* its dispatch table (`g_cmds_ext.c`) and then calls `Cmd_Kill_f()`
 (registered as `"kill"` in `g_cmds.c`) as usual. The gameplay module's
@@ -492,7 +492,7 @@ and `!firegod`'s "extinguish" leaves the flames on, because the value it writes
 is still larger than `level.time`.
 
 The fix has the same shape as the one in this module: keep `level.time` in one
-place (`main.lua:201` already hands it to `onGameFrame`, and `util/timers.lua:87`
+place (`main.lua:317` already hands it to `onGameFrame`, and `util/timers.lua:87`
 already receives it) and use that for anything the engine reads back. It was not
 part of that change, which was confined to `game/gameplay.lua`, `util/events.lua`
 and the tests - it is done now, in section 9.1, together with three more defects
@@ -706,7 +706,7 @@ after the `lua_*` built-ins it hands the command to `G_LuaHook_ConsoleCommand(cm
 et.trap_SendConsoleCommand(EXEC_APPEND, "csay 3 \"text\";")
   -> ConsoleCommand()                       g_svcmds.c:2645
   -> G_LuaHook_ConsoleCommand("csay")       g_svcmds.c:2679
-  -> et_ConsoleCommand(cmdText)             main.lua:170
+  -> et_ConsoleCommand(cmdText)             main.lua:258
   -> events "onServerCommand"               commands/commands.lua:204
   -> servercmds["csay"]                     commands/commands.lua:208
   -> commandClientConsolePrint()            commands/server/csay.lua

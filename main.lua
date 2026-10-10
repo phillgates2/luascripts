@@ -62,6 +62,88 @@ local homepath
 local lualibspath
 local luamodspath
 
+-- Every et_* callback below runs on a VM the engine created, and the engine
+-- creates that VM from G_LuaInit() - not from et_InitGame(). et_InitGame() is
+-- only ever called by G_LuaHook_InitGame(), at the very end of G_InitGame()
+-- (g_main.c), while G_LuaInit() runs in the middle of it. A VM can therefore
+-- exist, with this file already loaded and all callbacks registered, in these
+-- situations:
+--
+--   * `lua_init`    -> G_LuaInit()      (handled in g_svcmds.c's ConsoleCommand())
+--   * `lua_restart` -> G_LuaRestart()   (G_LuaShutdown() + G_LuaInit())
+--   * `gLoadLua`    -> Svcmd_LoadLua_f() -> G_LuaRunIsolated()
+--
+-- None of those three fires et_InitGame(), so on a running map the module is
+-- loaded but has no `events` (and no `game`, `commands`, ...) behind it, until
+-- the next map load. The engine keeps calling the callbacks:
+--
+--   * console/rcon commands go through Cmd_ExecuteString() -> SV_GameCommand()
+--     -> GAME_CONSOLE_COMMAND -> ConsoleCommand() -> G_LuaHook_ConsoleCommand()
+--     -> et_ConsoleCommand() (qcommon/cmd.c, sv_game.c, g_svcmds.c, g_lua.c);
+--   * G_Printf() during G_InitGame() reaches G_LuaHook_Print() -> et_Print()
+--     before G_LuaHook_InitGame() has run;
+--   * G_RunFrame() calls G_LuaHook_RunFrame() -> et_RunFrame() every frame.
+--
+-- The old code indexed `events`/`game` directly in those callbacks, which is
+-- what the live server reported as
+--
+--   Lua 5.4 API: et_ConsoleCommand error running lua script:
+--   '[string "luascripts/wolfadmin/main.lua"]:171: attempt to index a nil value
+--   (upvalue 'events')'
+--
+-- ET:Legacy's own position is that the module has to check for this
+-- (etlegacy/etlegacy#1426: "proper checks must be done to prevent the lua error
+-- if [the hook] was called before et_InitGame").
+--
+-- `initialized` is set at the end of et_InitGame(), so a module tree that fails
+-- to load half way through (a syntax error, a missing lua library, a bad
+-- database setting...) also leaves the callbacks inert instead of turning every
+-- command and every frame into another traceback. In that case the engine has
+-- already printed the *real* failure once, from G_LuaCall() on et_InitGame() -
+-- that first line is the one to fix.
+local initialized = false
+local warnedUninitialized = false
+
+-- One line to the server console, the first time a callback is used on a module
+-- that is not (yet) initialized: an admin who reloaded the scripts at runtime
+-- needs to know the module is dormant, and why.
+local function warnUninitialized(hook)
+    if warnedUninitialized then
+        return
+    end
+
+    warnedUninitialized = true
+
+    if not et or type(et.G_Print) ~= "function" then
+        return
+    end
+
+    local why
+    if events then
+        why = "et_InitGame() did not finish loading the modules - fix the error printed above and load a map"
+    else
+        why = "the scripts were loaded outside a map load (lua_init, lua_restart and gLoadLua do not call et_InitGame()) - load a map to activate WolfAdmin"
+    end
+
+    et.G_Print("[WolfAdmin] warning: "..hook.."() called on an uninitialized module; "..why.."\n")
+end
+
+-- Guard for the engine callbacks. Returns false when the module tree is not
+-- loaded yet (reporting the first such call), so the caller can hand the engine
+-- its own "not handled" answer instead of raising a Lua error per command or
+-- frame. The engine only ever treats the integer 1 as an interception and a
+-- string as a client rejection (see the G_LuaHook_* functions in g_lua.c), so
+-- both 0 and nil mean "carry on".
+local function ready(hook)
+    if initialized then
+        return true
+    end
+
+    warnUninitialized(hook)
+
+    return false
+end
+
 -- need to do this somewhere else
 function wolfa_getVersion()
     return version
@@ -156,42 +238,76 @@ function et_InitGame(levelTime, randomSeed, restartMap)
     et.trap_SendConsoleCommand(et.EXEC_APPEND, "sets mod_wolfadmin "..wolfa_getVersion()..";")
 
     outputDebug("Module "..wolfa_getVersion().." ("..wolfa_getRelease()..") loaded successfully. Created by Timo 'Timothy' Smit.")
-    
+
+    -- the whole module tree is loaded: from here on the engine callbacks may
+    -- reach it (see the note above `initialized`)
+    initialized = true
+    warnedUninitialized = false
+
     events.trigger("onGameInit", levelTime, randomSeed, (restartMap == 1))
 end
 
 function et_ShutdownGame(restartMap)
-    -- check whether the module has fully initialized
+    -- only the event bus is needed here: when et_InitGame() failed half way
+    -- through, the modules that did load still get their onGameShutdown
     if events then
         events.trigger("onGameShutdown", (restartMap == 1))
     end
 end
 
 function et_ConsoleCommand(cmdText)
+    if not ready("et_ConsoleCommand") then
+        return 0
+    end
+
     return events.trigger("onServerCommand", cmdText)
 end
 
 function et_ClientConnect(clientId, firstTime, isBot)
+    if not ready("et_ClientConnect") then
+        return
+    end
+
     return events.trigger("onClientConnectAttempt", clientId, (firstTime == 1), (isBot == 1))
 end
 
 function et_ClientBegin(clientId)
+    if not ready("et_ClientBegin") then
+        return
+    end
+
     events.trigger("onClientBegin", clientId)
 end
 
 function et_ClientDisconnect(clientId)
+    if not ready("et_ClientDisconnect") then
+        return
+    end
+
     events.trigger("onClientDisconnect", clientId)
 end
 
 function et_ClientUserinfoChanged(clientId)
+    if not ready("et_ClientUserinfoChanged") then
+        return
+    end
+
     events.trigger("onClientInfoChange", clientId)
 end
 
 function et_ClientCommand(clientId, cmdText)
+    if not ready("et_ClientCommand") then
+        return 0
+    end
+
     return events.trigger("onClientCommand", clientId, cmdText)
 end
 
 function et_RunFrame(levelTime)
+    if not ready("et_RunFrame") then
+        return
+    end
+
     local gameState = tonumber(et.trap_Cvar_Get("gamestate"))
     
     if game.getState() ~= gameState then
@@ -250,6 +366,13 @@ function et_SpawnEntitiesFromString()
 end
 
 function et_Print(consoleText)
+    -- G_Printf() reaches this hook while a map is still being initialized
+    -- (G_InitGame() prints long before G_LuaHook_InitGame() runs), and the
+    -- engine returns the first string back as the replacement line
+    if not ready("et_Print") then
+        return
+    end
+
     local result, poll
 
     if et.trap_Cvar_Get("fs_game") == "legacy" then
@@ -271,10 +394,18 @@ function et_Print(consoleText)
 end
 
 function et_Obituary(victimId, killerId, mod)
+    if not ready("et_Obituary") then
+        return
+    end
+
     events.trigger("onPlayerDeath", victimId, killerId, mod)
 end
 
 function et_ClientSpawn(clientId, revived)
+    if not ready("et_ClientSpawn") then
+        return
+    end
+
     -- Always fire the event (revived==0 fresh spawn, revived==1 after a
     -- medic revive). Several gameplay tweaks (weapon grants, state resets)
     -- need to run after revive as well as after a fresh spawn, and handlers
@@ -283,9 +414,17 @@ function et_ClientSpawn(clientId, revived)
 end
 
 function et_Damage(targetId, attackerId, damage, damageFlags, meansOfDeath)
+    if not ready("et_Damage") then
+        return 0
+    end
+
     return events.trigger("onDamage", targetId, attackerId, damage, damageFlags, meansOfDeath)
 end
 
 function et_WeaponFire(clientId, weapon)
+    if not ready("et_WeaponFire") then
+        return 0
+    end
+
     return events.trigger("onWeaponFire", clientId, weapon)
 end
