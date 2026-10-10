@@ -505,7 +505,7 @@ test("a passed poll reaches the bots through game/botvote", function()
 	local server = new_server({ sv_maxclients = 4 })
 	player(server, 0, 1)
 
-	-- main.lua:216 turns the engine's log line into this event
+	-- main.lua:385 turns the engine's log line into this event
 	server.events.trigger("onPollFinish", true, "enable bots")
 	check(console(server):find("bot minbots -1", 1, true) ~= nil, "the poll put the bots in")
 	check(console(server):find("needbots", 1, true) == nil,
