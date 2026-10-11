@@ -24,10 +24,19 @@ local auth = {}
 
 local srv
 
+-- True once a real backend (the ACL or shrubbot) is installed. While the
+-- unavailable stand-in below is in place every accessor answers "guest", so
+-- without this a command cannot tell "this player may not do that" from
+-- "there is no ACL at all" - the difference between a permission denial and a
+-- command that silently cannot work.
+local backendAvailable = false
+
 -- Some console-side admin commands bypass per-player permission checks and
 -- call these accessors directly. Keep the auth interface callable when its
 -- backend is unavailable instead of raising on a nil method.
 local function useUnavailableBackend()
+    backendAvailable = false
+
     srv = {
         isPlayerAllowed = function() return false end,
         getPlayerLevel = function() return 0 end,
@@ -35,6 +44,10 @@ local function useUnavailableBackend()
     }
 
     setmetatable(auth, {__index = srv})
+end
+
+function auth.isBackendAvailable()
+    return backendAvailable
 end
 
 auth.PERM_ADMINTEST = "admintest"
@@ -181,6 +194,8 @@ function auth.onGameInit()
         srv = wolfa_requireModule("auth.acl")
 
         srv.readPermissions()
+
+        backendAvailable = true
     else
         local flagsOk = pcall(wolfa_requireModule, "auth.shrubbot."..et.trap_Cvar_Get("fs_game"))
 
@@ -201,6 +216,8 @@ function auth.onGameInit()
 
         srv = wolfa_requireModule("auth.shrubbot")
         srv.loadFlags(et.trap_Cvar_Get("fs_game"))
+
+        backendAvailable = true
     end
     
     setmetatable(auth, {__index = srv})

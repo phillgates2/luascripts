@@ -72,6 +72,16 @@ local function has(text, needle)
 	return text:find(needle, 1, true) ~= nil
 end
 
+-- What the admin who typed a command was answered is two different streams:
+-- a reply to a player is a queued chat line (engine.consoles, s.output()),
+-- a reply to the console is et.G_Print() - the engine sends that to the
+-- server console and, inside `rcon`, back to the rcon client (engine.log,
+-- s.log()). A command that only answers one of the two is the "nothing
+-- happens" complaint, so the console tests read both.
+local function seen(s)
+	return s.output() .. "\n" .. s.log()
+end
+
 local GUID = { A = ("A"):rep(32), B = ("B"):rep(32), C = ("C"):rep(32), X = ("X"):rep(32) }
 
 -- the same scenario on the three value types the LuaSQL drivers produce
@@ -128,6 +138,7 @@ for _, mode in ipairs(MODES) do
 		s.console("!setlevel 2 5")
 		no_errors(s, "!setlevel 2 5")
 		check(has(s.output(), "Alice ^9is now a level ^75"), "Alice is announced as level 5")
+		check(has(s.log(), "Alice is now a level 5 player"), "and the console is answered in place, not only the players")
 		local row = s.query("SELECT level_id FROM player WHERE guid='" .. GUID.A .. "'")[1]
 		check(row and tonumber(row.level_id) == 5, "and the row says 5")
 		check(#s.query("SELECT * FROM history WHERE type='level'") == 1, "one history entry was written")
@@ -135,12 +146,12 @@ for _, mode in ipairs(MODES) do
 		s.mark()
 		s.console("!setlevel Bob 3")
 		no_errors(s, "!setlevel by name")
-		check(has(s.output(), "Bob ^9is now a level ^73"), "Bob is level 3 by name")
+		check(has(seen(s), "Bob ^9is now a level ^73"), "Bob is level 3 by name")
 
 		s.mark()
 		s.console("!setlevel 2 abc")
 		no_errors(s, "!setlevel with a non-numeric level")
-		check(has(s.output(), "is not a level number"), "a non-numeric level is refused")
+		check(has(seen(s), "is not a level number"), "a non-numeric level is refused and said so on the console")
 		row = s.query("SELECT level_id FROM player WHERE guid='" .. GUID.A .. "'")[1]
 		check(tonumber(row.level_id) == 5, "and Alice is still level 5, not demoted to 0")
 
@@ -148,21 +159,21 @@ for _, mode in ipairs(MODES) do
 			s.mark()
 			s.console("!setlevel 2 " .. bad)
 			no_errors(s, "!setlevel 2 '" .. bad .. "'")
-			check(not has(s.output(), "is now a level"), "'" .. bad .. "' changes nothing")
+			check(not has(seen(s), "is now a level"), "'" .. bad .. "' changes nothing")
 		end
 
 		s.mark()
 		s.console("!setlevel 2 9")
-		check(has(s.output(), "does not exist"), "a level that is not in the table is refused")
+		check(has(seen(s), "does not exist"), "a level that is not in the table is refused")
 		s.mark()
 		s.console("!setlevel 7 1")
-		check(has(s.output(), "no connected player"), "an empty slot is refused")
+		check(has(seen(s), "no connected player"), "an empty slot is refused")
 		s.mark()
 		s.console("!setlevel zzz 1")
-		check(has(s.output(), "no or multiple matches"), "an unknown name is refused")
+		check(has(seen(s), "no or multiple matches"), "an unknown name is refused")
 		s.mark()
 		s.console("!setlevel")
-		check(has(s.output(), "setlevel usage"), "no arguments prints the usage")
+		check(has(seen(s), "setlevel usage"), "no arguments prints the usage")
 		no_errors(s, "the refusals")
 		s.close()
 	end)
@@ -216,6 +227,24 @@ for _, mode in ipairs(MODES) do
 		s.client(3, "say", "!setlevel 4 1")
 		check(has(s.output(), "Carol ^9is now a level ^71"), "Bob (3) can set Carol to 1")
 		no_errors(s, "the player-side level checks")
+
+		-- the channel, not the permission: Bob now HAS 'setlevel', but the
+		-- stock level 3 has neither 'teamcmds' nor 'silentcmds', and the
+		-- dispatcher used to drop the command without a word - Bob typed
+		-- !setlevel, nothing happened, and nothing said why
+		s.mark()
+		s.client(3, "say_team", "!setlevel 4 1")
+		check(has(s.output(), "'say_team !setlevel' needs the '^7teamcmds^9' permission"), "a team-chat command without 'teamcmds' says what is missing")
+		s.mark()
+		s.client(3, "!setlevel 4 1")
+		check(has(s.output(), "'!setlevel' needs the '^7silentcmds^9' permission"), "a silent (console) command without 'silentcmds' says what is missing")
+
+		s.console("!acl addpermission 3 silentcmds")
+		s.mark()
+		s.client(3, "!setlevel 4 1")
+		check(has(s.output(), "Carol ^9is now a level ^71"), "with 'silentcmds' the same command runs")
+		no_errors(s, "the channel refusals")
+
 
 		-- !acl in game
 		s.mark()
@@ -301,13 +330,14 @@ for _, mode in ipairs(MODES) do
 		s.console("!setlevel 2 5")
 		no_errors(s, "console !setlevel with no console row")
 		check(has(s.output(), "Alice ^9is now a level ^75"), "the console can still make the first Server Owner")
+		check(has(s.log(), "Alice is now a level 5 player"), "and the console is answered in place too")
 		check(#s.query("SELECT * FROM history") == 1, "the history entry was written")
 
 		s.console("acl addlevel 6 Root")
 		s.mark()
 		s.console("!setlevel 2 6")
 		no_errors(s, "console !setlevel to a level above the stock ones")
-		check(has(s.output(), "is now a level ^76"), "the console outranks every level, including a new one")
+		check(has(seen(s), "is now a level ^76"), "the console outranks every level, including a new one")
 		s.close()
 	end)
 
@@ -319,7 +349,7 @@ for _, mode in ipairs(MODES) do
 		s.console("!setlevel 5 1")
 		s.console("!finger 5")
 		no_errors(s, "!setlevel / !finger on that slot")
-		check(not has(s.output(), "is now a level"), "nothing is stored for it")
+		check(not has(seen(s), "is now a level"), "nothing is stored for it")
 		s.close()
 	end)
 
@@ -355,8 +385,38 @@ test("!setlevel fails cleanly when the standalone database is unavailable", func
 	s.mark()
 	s.console("!setlevel 2 5")
 	no_errors(s, "!setlevel with no database connection")
-	check(has(s.output(), "database is unavailable"), "the console gets a clear database-unavailable response")
-	check(not has(s.output(), "is now a level"), "no level change is announced")
+	check(has(s.log(), "database is unavailable"), "the console gets a clear database-unavailable response")
+	check(pcall(auth.isBackendAvailable) and auth.isBackendAvailable() == false, "and the auth module reports no backend")
+	check(not has(seen(s), "is now a level"), "no level change is announced")
+	s.close()
+end)
+
+test("add-on mode (standalone = 0) with no shrubbot flag table: !setlevel says so instead of doing nothing", function()
+	-- `standalone = 0` wins over settings.determineMode(), so a stale line in
+	-- wolfadmin.toml (or `set g_standalone 0`) puts an ET:Legacy server in
+	-- add-on mode; there is no auth/shrubbot/legacy.lua, so auth installs its
+	-- "no backend" stand-in and the pass-through !setlevel has nothing that
+	-- could apply the level. That used to be `return false` and silence.
+	local s = server.new({ standalone = 0, fs_game = "legacy" })
+	s.init()
+	assert(#s.errors == 0, "et_InitGame raised: " .. tostring(s.errors[1]))
+
+	local auth = require("luascripts/wolfadmin/auth/auth")
+	check(pcall(auth.isBackendAvailable) and auth.isBackendAvailable() == false, "the auth module knows there is no backend")
+	assert(s.join(2, { name = "Alice", guid = GUID.A }))
+
+	s.mark()
+	s.console("!setlevel 2 5")
+	no_errors(s, "console !setlevel without a backend")
+	check(has(s.log(), "no admin backend is available"), "the console is told why nothing happened")
+
+	s.mark()
+	s.client(2, "say", "!setlevel 2 5")
+	no_errors(s, "player !setlevel without a backend")
+	check(has(s.output(), "permission denied"), "a player command is denied without a backend")
+	check(has(s.output(), "cchat 2"), "and the answer is a chat line the player sees, not a console print")
+	check(has(s.output(), "csay 2"), "plus the print for a client that hid the chat line")
+	check(not has(seen(s), "is now a level"), "no level change is announced")
 	s.close()
 end)
 

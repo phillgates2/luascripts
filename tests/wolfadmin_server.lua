@@ -126,12 +126,16 @@ function server.new(opts)
 	local tmp = os.tmpname()
 	os.remove(tmp)
 	local base = tmp .. "_wa"
-	assert(os.execute('mkdir -p "' .. base .. '/legacy/luascripts"'))
-	assert(os.execute('ln -sfn "$(cd "' .. ROOT .. '" && pwd)" "' .. base .. '/legacy/luascripts/wolfadmin"'))
+	-- the mod directory has to be the one the module will look in: db.lua
+	-- opens <homepath>/<fs_game>/wolfadmin.db, and sqlite cannot create that
+	-- file in a directory that does not exist
+	local fsGame = opts.fs_game or "legacy"
+	assert(os.execute('mkdir -p "' .. base .. "/" .. fsGame .. '/luascripts"'))
+	assert(os.execute('ln -sfn "$(cd "' .. ROOT .. '" && pwd)" "' .. base .. "/" .. fsGame .. '/luascripts/wolfadmin"'))
 
 	engine.cvars.fs_basepath = base
 	engine.cvars.fs_homepath = base
-	engine.cvars.fs_game = opts.fs_game or "legacy"
+	engine.cvars.fs_game = fsGame
 	engine.cvars.sv_maxclients = tostring(opts.maxclients or 20)
 	engine.cvars.g_gametype = "2"
 	engine.cvars.sv_privateClients = "0"
