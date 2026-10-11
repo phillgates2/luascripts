@@ -334,6 +334,32 @@ for _, mode in ipairs(MODES) do
 	end)
 end
 
+test("!setlevel fails cleanly when the standalone database is unavailable", function()
+	local toml = table.concat({
+		"[main]",
+		"standalone = 1",
+		'os = "unix"',
+		"[db]",
+		'type = "none"',
+		'file = "wolfadmin.db"',
+	}, "\n")
+	local s = server.new({ toml = toml })
+	s.init()
+
+	local auth = require("luascripts/wolfadmin/auth/auth")
+	check(type(auth.getPlayerLevel) == "function", "offline auth still exposes getPlayerLevel()")
+	check(auth.getPlayerLevel(-1337) == 0, "offline auth treats the console as guest")
+	check(auth.isPlayerAllowed(-1337, "setlevel") == false, "offline auth denies permissions")
+
+	assert(s.join(2, { name = "Alice", guid = GUID.A }))
+	s.mark()
+	s.console("!setlevel 2 5")
+	no_errors(s, "!setlevel with no database connection")
+	check(has(s.output(), "database is unavailable"), "the console gets a clear database-unavailable response")
+	check(not has(s.output(), "is now a level"), "no level change is announced")
+	s.close()
+end)
+
 -- --------------------------- the full sweep -------------------------------
 
 test("every admin command, from the console and from players, raises nothing", function()

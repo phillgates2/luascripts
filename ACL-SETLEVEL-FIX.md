@@ -21,7 +21,7 @@ string (LuaSQL mysql)**, every number a float (LuaSQL < 2.4 on Lua 5.3+).
 Then every admin command (106) was run from the console, in chat, silently,
 by a Server Owner, an Admin and a Guest, with eight argument shapes each; and
 the `acl`/`!setlevel`/`!acl` scenarios by hand. Everything below came out of
-that; the same run is now `tests/acl_setlevel_spec.lua` (217 checks).
+that; the same run is now `tests/acl_setlevel_spec.lua` (223 checks).
 
 ## 2. What was wrong
 
@@ -35,6 +35,7 @@ that; the same run is now `tests/acl_setlevel_spec.lua` (217 checks).
 | 6 | `admin/admin.lua`, `commands/admin/setlevel.lua` | a victim with no database record: `UPDATE player ... WHERE id='nil'` | `setPlayerLevel()` did not check `getPlayerId()` |
 | 7 | `db/sqlite3.lua`, `db/mysql.lua` | after `close()` a second `start()` (VM kept across a map change, `lua_restart`): `attempt to index a nil value (upvalue 'env')` | `close()` drops the environment and `start()` never recreated it |
 | 8 | `commands/admin/finger.lua`, `stats.lua` | `attempt to compare number with nil` when `sv_privateClients` is unset | `tonumber("")` |
+| 9 | `auth/auth.lua`, `commands/admin/setlevel.lua` | with standalone mode and no database connection, console `!setlevel` → `setlevel.lua:106: field 'getPlayerLevel' is not callable (a nil value)` | the disconnected-database branch returned before installing an auth backend; console admin commands bypass the per-player permission check and called the missing method. |
 
 ## 3. The fix
 
@@ -49,7 +50,12 @@ that; the same run is now `tests/acl_setlevel_spec.lua` (217 checks).
 * **`commands/admin/setlevel.lua`**: the level must match `^%d+$` ("'abc' is
   not a level number, see !acl listlevels"), both levels are compared as
   numbers, a missing level argument prints the usage, and a level that could
-  not be stored says so instead of announcing it.
+  not be stored says so instead of announcing it. It also refuses the command
+  with a clear message before touching auth or database methods if the database
+  is disconnected.
+* **`auth/auth.lua`**: an unavailable auth backend still exposes safe methods
+  (`getPlayerLevel()` returns 0, permission checks return false), so a console
+  command cannot fail by calling a nil auth method.
 * **`commands/server/acl.lua` / `commands/admin/acl.lua`**: every helper is
   `local`. `acl listpermissions` tolerates a level with none, `acl addlevel`
   needs a name, the usage line ends in a newline.
@@ -75,8 +81,9 @@ $ lua tests/acl_setlevel_spec.lua
 == [sqlite3 (integers)] !resetsprees all on SQLite
 == [mysql (every column a string)] ...   (the same seven)
 == [old sqlite3 (every number a float)] ...   (the same seven)
+== !setlevel fails cleanly when the standalone database is unavailable
 == every admin command, from the console and from players, raises nothing
-217 checks passed
+223 checks passed
 ```
 
 Against the tree before this fix the same spec fails 79 checks with exactly
