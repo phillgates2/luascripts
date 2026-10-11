@@ -859,9 +859,9 @@ pressed jump again" is configurable - `g_doublejump_mode`:
 
 | mode | what arms the second jump | note |
 |------|---------------------------|------|
-| `command` (default) | the client command `djump` | jaymod's, as closely as ET:Legacy's Lua allows: no client-side prediction, no extra key needed. The player binds it: `bind SPACE "+moveup;djump"` puts it on the jump key |
+| `command` (the default when this was written; §14 makes `auto` the default) | the client command `djump` | jaymod's, as closely as ET:Legacy's Lua allows: no client-side prediction, no extra key needed. The player binds it: `bind SPACE "+moveup;djump"` puts it on the jump key |
 | `crouch` | a rising edge of `PMF_DUCKED` (`pm_flags & 1`) while airborne | no binding needed, and `eFlags & EF_CROUCHING` confirms it from the other side; the price is that crouching in mid-air to look down also uses the jump |
-| `auto` | nothing - the second jump is applied on take-off | the `g_maxFlight 2` feel: two jumps' worth of height per jump |
+| `auto` (the default since §14) | nothing - the second jump is applied on take-off | the `g_maxFlight 2` feel: two jumps' worth of height per jump |
 
 `mode` decides, but the live centre print that tells the player the jump is ready
 is only sent from the `onClientCommand` path (`command` mode), because a message
@@ -873,7 +873,7 @@ Two cvars and one command:
 
 ```
 g_doublejump          0/1        master switch, default 1
-g_doublejump_mode     command|crouch|auto
+g_doublejump_mode     auto|command|crouch   default auto since §14, was command
 g_doublejump_window   ms         default 850, jaymod's PM_JUMP_DELAY
 g_doublejump_boost    factor     default 1.4
 g_doublejump_sound    ""         optional "sound/player/land.wav" on the jump
@@ -891,7 +891,7 @@ caches and a toggle mid-round should take effect on the next frame.
 !doublejump                    - report the current state
 !doublejump on|off             - flip g_doublejump
 !doublejump status             - as above, plus every cvar
-!doublejump mode command|crouch|auto
+!doublejump mode auto|command|crouch
 !doublejump window <ms>        - capped at 10000
 !doublejump boost <factor>     - must be > 0
 ```
@@ -1257,3 +1257,108 @@ Verification: `/tmp/lua54 tests/<name>.lua`, all green - doublejump 67 (three
 new checks: the hint arrives as `cp` + `cpm` and never as a bare console
 `print`), knife_kill 182, live_sim 26, gameplay 38, audit_fix 70, botvote 184,
 honors 34, slot5_engine 20.
+
+## 14. Follow-up: "make double jump a true double jump by pressing jump twice"
+
+The request: press jump, press jump again in mid air, get jaymod's second jump -
+with nothing to install first. §13 answered the same report from the server by
+pushing the `djump` bind harder; this one changes what every player gets by
+default instead.
+
+What was checked before anything was changed, because the answer decides the
+whole design (ET:Legacy master `g_lua.c`, and the Lua API's own field and
+function tables):
+
+1. **The server cannot see a jump press in mid air.** `etlib[]` has no
+   `trap_GetUsercmd`, and the player field table has no `buttons`, no `upmove`
+   and no usercmd state of any kind - `ps.pm_flags`, `ps.pm_type`, `ps.eFlags`,
+   `ps.velocity`, `ps.stats`, `ps.leanf` and the rest, read-only where they
+   matter here. `PMF_JUMP_HELD` is written only by `PM_CheckJump()`, which
+   `PM_WalkMove()` calls on the ground and `PM_AirMove()` does not, and
+   `PmoveSingle()` clears it again on key-up. The flag can therefore report "the
+   player left the ground" and "the player let go", and nothing at all about a
+   press that happens off the floor. What Lua *can* see in the air is the duck
+   flag and the lean, which is why `crouch` mode exists.
+2. **`+moveup` never reaches `et_ClientCommand()`.** It is a client-side
+   command: `cl_input.c` registers `+moveup`/`-moveup` beside `+attack` and the
+   rest, and the client folds the key into `ucmd.upmove` itself. The server only
+   ever sees the usercmd, which Lua cannot read.
+3. **The bind cannot be installed for a player either.** A stock client runs a
+   fixed list of server commands and drops anything it does not know, so there
+   is no `bind` push - and smuggling one in through a downloaded pk3's
+   `autoexec.cfg` would be a change to a player's own client that they never
+   asked for, which this module is not going to do.
+
+So "press jump twice" on the jump key stays a per-player opt-in
+(`bind SPACE "+moveup;djump"`) and can never be a default. Given that, the
+default is now the one trigger that asks nothing of anybody:
+
+- **`g_doublejump_mode` defaults to `auto`.** Every take-off leaves the ground
+  at `JUMP_VELOCITY * g_doublejump_boost`, so a player who presses jump gets the
+  extra jump, and a player who presses it twice gets it on the first press and
+  nothing bad on the second. The trade is honest and written into the module
+  header: the jump cannot be saved for later, so it plays as a higher jump
+  rather than a second one the player picks the moment of. The other half of the
+  trade is the prediction correction, which is how the module has always worked
+  and now happens on every jump instead of on request - the client predicts a
+  normal 270 and the server's 378 arrives a snapshot later, the same snap
+  `!throw` has always had. `command` (jaymod's
+  own tap-twice, for the players who bind a key) and `crouch` (a duck in mid
+  air) are unchanged and still there, and `!doublejump mode
+  <auto|command|crouch>` moves between them.
+- **The spawn hint now matches the mode.** In auto it says the jump is boosted
+  and that there is nothing to bind; §13's `bind MOUSE3 djump` push only happens
+  in command mode, where it is still needed. `g_doublejump_announce 0` silences
+  all three.
+- **`!doublejump` says what each mode costs.** `status` reports the trigger in
+  words and whether players have anything to bind; switching modes announces
+  that command mode needs a bind, and that auto needs neither a bind nor a
+  second press. `getStatus()` carries the two new fields (`trigger`,
+  `needsBind`).
+
+Making auto the default turned three latent defects in the take-off read into
+live ones, because that read now decides when to write velocity for every player
+on the server rather than when to re-arm a jump they asked for:
+
+- **The impulse read was a threshold, so every upward push the server writes was
+  a "take-off".** `poll()` took `ps.velocity[3] >= JUMP_VELOCITY - 60` for a
+  jump. That is right for a bunny hop - the engine has already taken a frame of
+  gravity off the 270 - and wrong for everything else that goes up: `!throw`,
+  `!fling` and `!launch` write 700 to 1200 straight up
+  (`commands/admin/throw.lua`, `commands/admin/throwall.lua`), and a grenade or
+  a rocket writes what it likes. In command mode that only re-armed a jump the
+  player had already spent; in auto mode it rewrote the velocity to `270 * 1.4`
+  and quietly halved every throw on a server that had the double jump on. The
+  read is now a band, `IMPULSE_TOLERANCE` either side of `JUMP_VELOCITY`
+  (210..330 at the defaults), so the jump impulse is recognised and nothing
+  above it is.
+- **A band makes the latch re-arm on the way down.** `seenBelow` was set by "not
+  an impulse", which under a threshold meant "below the impulse". Under a band,
+  the module's own boost (378) leaves through the top, sets `seenBelow`, and
+  decays back into the band on the way to the apex - a second "take-off" and a
+  second boost every 100 ms for as long as the player climbs, i.e. flight. The
+  latch is now literally what its comment always said: the impulse only counts
+  again once the player has been seen *below* it.
+- **auto mode wrote velocity for anybody the read mistook for a jumper.** A
+  spectator flying up through the map at 250 u/s sits inside the band. The
+  player rules `check()` applies - on a playing team, alive, upright,
+  `PM_NORMAL` - are now asked before the boost too, as `playerCanJump()`, shared
+  with `check()` rather than duplicated. `check()` itself cannot be used at
+  take-off: it wants the player airborne and inside the window, and at the
+  instant `PM_CheckJump()` fires they are neither.
+
+Tests: `tests/doublejump_spec.lua`, 87 checks (was 67). The new ones pin the
+default (a jump with no bind and no second press is boosted, the next one after
+landing is boosted too, `g_doublejump 0` still outranks it), the band
+(`!throw`'s 900 and `!launch`'s 1200 survive, a spectator at 250 is left alone,
+a real jump at 270 and a bunny hop at 230 are still boosted), the latch (a boost
+decaying back through the band is not read as a new take-off) and the
+announcement (auto pushes no bind, command still does). The gated-trigger specs
+now say `set_mode("command")` outright, since the default no longer gates.
+Mutation-tested: dropping the band's ceiling, reverting the latch, dropping the
+player rules from auto, and putting the default back to `command` each fail the
+check that exists for it, and nothing else.
+
+Verification: `lua tests/<name>.lua`, all green - doublejump 87, audit_fix 70,
+botvote 184, gameplay 38, honors 34, knife_kill 182, slot5_engine 20, live_sim
+26 (641 checks), and all 164 `.lua` files in the tree compile clean.

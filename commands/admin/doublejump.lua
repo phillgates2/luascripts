@@ -20,6 +20,13 @@
 -- server is doing now. Everything it writes is one of the cvars the module
 -- reads, so a server.cfg can set the same values at start-up and rcon can set
 -- them without WolfAdmin.
+--
+-- The mode it reports by default is auto, the one that asks nothing of the
+-- player: a jump press in mid air never reaches a Lua module, so a bind of the
+-- player's own is the only route to jaymod's tap-jump-twice, and command mode
+-- works only for the players who made one. game/doublejump.lua's header carries
+-- the engine detail; the job here is to say out loud which of the three the
+-- server is running and what each one costs.
 
 local auth = wolfa_requireModule("auth.auth")
 
@@ -39,7 +46,8 @@ local function status(clientId)
     local state = doublejump.getStatus()
 
     et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^ddoublejump: ^9"..(state.enabled and "on" or "off")..", ^7mode ^3"..state.mode..", ^7window ^3"..state.window.."ms^7, ^7boost ^3x"..state.boost.." ^7of "..state.jumpVelocity.."^9.\";")
-    et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^ddoublejump: ^9"..state.maxAirJumps.." extra jump per time in the air"..(state.announce and ", players are told how to trigger it on spawn" or "")..".\";")
+    et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^ddoublejump: ^9"..state.maxAirJumps.." extra jump per time in the air - ^7"..state.trigger.."^9.\";")
+    et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^ddoublejump: "..(state.needsBind and "^9players must bind ^3djump^9 once, which nothing on the server can do for them" or "^9nothing for players to bind")..(state.announce and ", and they are told how it works on spawn" or "")..".\";")
 end
 
 function commandDoubleJump(clientId, command, action, ...)
@@ -66,12 +74,23 @@ function commandDoubleJump(clientId, command, action, ...)
         local mode = doublejump.setMode(args[1])
 
         if not mode then
-            et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^ddoublejump: ^9no such mode, choose ^3command^9, ^3crouch^9 or ^3auto^9.\";")
+            et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^ddoublejump: ^9no such mode, choose ^3auto^9 (the default), ^3command^9 or ^3crouch^9.\";")
 
             return true
         end
 
-        et.trap_SendConsoleCommand(et.EXEC_APPEND, "cchat -1 \"^ddoublejump: ^9trigger mode is now ^7"..mode.."^9."..((mode == "command") and " ^9Players must bind ^3djump^9 - ^3bind MOUSE3 djump^9, or one quoted ^3+moveup;djump^9 on the jump key." or "").."\";")
+        -- what the mode change asks of the players is worth saying in the same
+        -- breath: command mode is the only one that answers a second press of
+        -- the jump key, and it is the only one that needs a bind to do it
+        local note = ""
+
+        if mode == "command" then
+            note = " ^9Players must bind ^3djump^9 - ^3bind MOUSE3 djump^9, or one quoted ^3+moveup;djump^9 on the jump key."
+        elseif mode == "auto" then
+            note = " ^9Every take-off is boosted, so players need no bind and no second press."
+        end
+
+        et.trap_SendConsoleCommand(et.EXEC_APPEND, "cchat -1 \"^ddoublejump: ^9trigger mode is now ^7"..mode.."^9."..note.."\";")
 
         return true
     elseif action == "window" or action == "boost" then
@@ -102,4 +121,4 @@ function commandDoubleJump(clientId, command, action, ...)
 
     return true
 end
-commands.addadmin("doublejump", commandDoubleJump, auth.PERM_CHEATS, "toggles the double jump and how players trigger it", "^9(^3on|off|status|mode <command|crouch|auto>|window <ms>|boost <x>^9)", nil, (settings.get("g_standalone") == 0))
+commands.addadmin("doublejump", commandDoubleJump, auth.PERM_CHEATS, "toggles the double jump and how players trigger it", "^9(^3on|off|status|mode <auto|command|crouch>|window <ms>|boost <x>^9)", nil, (settings.get("g_standalone") == 0))
