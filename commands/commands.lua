@@ -144,6 +144,40 @@ function commands.log(clientId, command, victim, ...)
     logs.writeAdmin(clientId, command, victimId, ...)
 end
 
+-- Where a reply to an admin command has to land so that the admin actually
+-- sees it. The command files used to send every answer to the invoker as the
+-- queued console command `csay <clientId> "text"`, and that has two blind
+-- spots - both of them read as "!setlevel does not do anything":
+--
+--   * the server console / rcon (`clientId -1337`): the queued command runs
+--     after SVC_RemoteCommand() has returned, i.e. after Com_EndRedirect()
+--     has already sent the rcon output back to the asking client. A message
+--     printed then only reaches the server console (and the log file), so an
+--     admin on rcon - the in-game rcon, a panel, a script - sees nothing.
+--     et.G_Print() *inside* the command is redirected to the rcon client.
+--
+--   * a player: `csay` is the client command `print`, which ET shows in the
+--     client *console*. An admin who typed the command in chat, behind the
+--     game, never sees it. A chat line lands where they typed, and the print
+--     stays for the clients that configured the chat line away
+--     (cg_teamChatsOnly).
+function commands.reply(clientId, text)
+    clientId = tonumber(clientId)
+
+    if not clientId then
+        return
+    end
+
+    if clientId == -1337 then
+        et.G_Print(util.removeColors(text).."\n")
+
+        return
+    end
+
+    et.trap_SendConsoleCommand(et.EXEC_APPEND, "cchat "..clientId.." \""..text.."\";")
+    et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \""..text.."\";")
+end
+
 -- every permission a registered command is guarded by, mapped to the commands
 -- that need it
 function commands.collectPermissions()
@@ -338,10 +372,28 @@ function commands.onClientCommand(clientId, command)
                     local permission = admincmds[shrubCmd]["flag"]
 
                     -- name the permission, so a denied command can be fixed
-                    -- with !acl addpermission instead of guessing which one
+                    -- with !acl addpermission instead of guessing which one,
+                    -- and put the answer in the invoker's chat: the print it
+                    -- used to be is invisible in the game
                     outputDebug("player "..clientId.." was denied '"..shrubCmd.."', which needs permission '"..permission.."'", 3)
 
-                    et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^d"..shrubCmd..": ^9permission denied ^9(^7"..permission.."^9)\";")
+                    commands.reply(clientId, "^d"..shrubCmd..": ^9permission denied ^9(^7"..permission.."^9)")
+                end
+            else
+                -- The command exists, but the channel it came in on is closed
+                -- to this player: a client-console command (`/!setlevel ...`)
+                -- needs `silentcmds`, a team-chat command `teamcmds`. Those
+                -- were swallowed without a word, which is exactly what
+                -- "!setlevel does not do anything" looks like in game.
+                local channel = (wolfCmd == "!"..shrubCmd) and auth.PERM_SILENTCMDS or auth.PERM_TEAMCMDS
+
+                if not auth.isPlayerAllowed(clientId, channel) then
+                    -- name the way the command was typed: "!setlevel" and
+                    -- "say_team !setlevel" are the same command, and the
+                    -- permission that is missing differs
+                    local invocation = (wolfCmd == "!"..shrubCmd) and ("!"..shrubCmd) or (wolfCmd.." !"..shrubCmd)
+
+                    commands.reply(clientId, "^d"..shrubCmd..": ^9'"..invocation.."' needs the '^7"..channel.."^9' permission")
                 end
             end
         end

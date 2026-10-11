@@ -28,29 +28,53 @@ local players = wolfa_requireModule("players.players")
 
 local settings = wolfa_requireModule("util.settings")
 
-function commandSetLevel(clientId, command, victim, level)
+-- add-on mode: the host mod owns the admin levels (shrubbot.cfg), so the
+-- command only records the change and hands the line back to the mod. When
+-- there is no backend at all - `standalone = 0` on a mod without a shrubbot
+-- flag table, e.g. ET:Legacy - nothing would handle it, and the command used
+-- to return without a word ("!setlevel does not do anything"); say so instead.
+function commandSetLevelPassThrough(clientId, command, victim, level)
+    if not auth.isBackendAvailable() then
+        commands.reply(clientId, "^dsetlevel: ^9no admin backend is available - add-on mode needs a mod with shrubbot flags (see wolfadmin.toml, standalone = 1)")
+
+        return true
+    elseif victim == nil or level == nil then
+        commands.reply(clientId, "^dsetlevel usage: "..commands.getadmin("setlevel")["syntax"])
+
+        return true
+    end
+
     local cmdClient
 
-    if not victim or not level then
-        return false
-    elseif tonumber(victim) == nil or tonumber(victim) < 0 or tonumber(victim) > tonumber(et.trap_Cvar_Get("sv_maxclients")) then
+    if tonumber(victim) == nil or tonumber(victim) < 0 or tonumber(victim) > tonumber(et.trap_Cvar_Get("sv_maxclients")) then
         cmdClient = et.ClientNumberFromString(victim)
     else
         cmdClient = tonumber(victim)
     end
 
+    -- -1 is what the engine's Lua binding used to answer for "none or more
+    -- than one match"; it hands back nil for that now
     if cmdClient == -1 or cmdClient == nil then
-        return false
+        commands.reply(clientId, "^dsetlevel: ^9no or multiple matches for '^7"..tostring(victim).."^9'.")
+
+        return true
     elseif not players.isConnected(cmdClient) then
-        return false
+        commands.reply(clientId, "^dsetlevel: ^9no connected player by that name or slot #")
+
+        return true
     end
 
     level = tonumber(level)
 
     if not level then
-        return false
+        commands.reply(clientId, "^dsetlevel: ^9'^7"..tostring(level).."^9' is not a level number")
+
+        return true
     end
 
+    -- the mod applies the level itself (the function returns false, so the
+    -- engine's own command handling - the mod - runs after this handler);
+    -- only the history entry is ours to write
     local victimLevel = tonumber(auth.getPlayerLevel(cmdClient)) or 0
     local invokerLevel = tonumber(auth.getPlayerLevel(clientId)) or 0
 
@@ -64,19 +88,21 @@ function commandSetLevel(clientId, command, victim, level)
 
     return false
 end
-commands.addadmin("setlevel", commandSetLevel, auth.PERM_SETLEVEL, "sets the admin level of a player", "^9[^3name|slot#^9] ^9[^3level^9]", true, (settings.get("g_standalone") ~= 0))
+commands.addadmin("setlevel", commandSetLevelPassThrough, auth.PERM_SETLEVEL, "sets the admin level of a player", "^9[^3name|slot#^9] ^9[^3level^9]", true, (settings.get("g_standalone") ~= 0))
 
+-- standalone mode: the level lives in WolfAdmin's database and this handler
+-- does the work.
 function commandSetLevel(clientId, command, victim, level)
     -- !setlevel needs the ACL and player tables in the database. The console
     -- command path bypasses permission checks, so fail clearly here if the
     -- standalone database did not connect instead of calling a missing auth
     -- backend (or a missing database method) below.
     if not db.isConnected() then
-        et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dsetlevel: ^9the database is unavailable; admin levels cannot be changed.\";")
+        commands.reply(clientId, "^dsetlevel: ^9the database is unavailable; admin levels cannot be changed.")
 
         return true
     elseif type(auth.getPlayerLevel) ~= "function" then
-        et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dsetlevel: ^9the authorization backend is unavailable; admin levels cannot be changed.\";")
+        commands.reply(clientId, "^dsetlevel: ^9the authorization backend is unavailable; admin levels cannot be changed.")
 
         return true
     end
@@ -84,7 +110,7 @@ function commandSetLevel(clientId, command, victim, level)
     local cmdClient
 
     if victim == nil or level == nil then
-        et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dsetlevel usage: "..commands.getadmin("setlevel")["syntax"].."\";")
+        commands.reply(clientId, "^dsetlevel usage: "..commands.getadmin("setlevel")["syntax"])
 
         return true
     elseif tonumber(victim) == nil or tonumber(victim) < 0 or tonumber(victim) > tonumber(et.trap_Cvar_Get("sv_maxclients")) then
@@ -94,11 +120,11 @@ function commandSetLevel(clientId, command, victim, level)
     end
 
     if cmdClient == -1 or cmdClient == nil then
-        et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dsetlevel: ^9no or multiple matches for '^7"..victim.."^9'.\";")
+        commands.reply(clientId, "^dsetlevel: ^9no or multiple matches for '^7"..victim.."^9'.")
 
         return true
     elseif not players.isConnected(cmdClient) then
-        et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dsetlevel: ^9no connected player by that name or slot #\";")
+        commands.reply(clientId, "^dsetlevel: ^9no connected player by that name or slot #")
 
         return true
     end
@@ -109,7 +135,7 @@ function commandSetLevel(clientId, command, victim, level)
     local levelId = string.match(tostring(level), "^%d+$") and tonumber(level)
 
     if not levelId then
-        et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dsetlevel: ^9'^7"..level.."^9' is not a level number, see ^2!acl listlevels^9.\";")
+        commands.reply(clientId, "^dsetlevel: ^9'^7"..level.."^9' is not a level number, see ^2!acl listlevels^9.")
 
         return true
     end
@@ -121,15 +147,15 @@ function commandSetLevel(clientId, command, victim, level)
     local invokerLevel = tonumber(auth.getPlayerLevel(clientId)) or 0
 
     if victimLevel > invokerLevel then
-        et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dsetlevel: ^9sorry, but your intended victim has a higher admin level than you do.\";")
+        commands.reply(clientId, "^dsetlevel: ^9sorry, but your intended victim has a higher admin level than you do.")
 
         return true
     elseif not db.getLevel(level) then
-        et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dsetlevel: ^9this admin level does not exist.\";")
+        commands.reply(clientId, "^dsetlevel: ^9this admin level does not exist.")
 
         return true
     elseif level > invokerLevel then
-        et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dsetlevel: ^9you may not setlevel higher than your current level.\";")
+        commands.reply(clientId, "^dsetlevel: ^9you may not setlevel higher than your current level.")
 
         return true
     end
@@ -137,14 +163,24 @@ function commandSetLevel(clientId, command, victim, level)
     if not admin.setPlayerLevel(cmdClient, level, clientId) then
         -- no player row and none could be created (a client without a GUID):
         -- say so instead of announcing a level that was never stored
-        et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dsetlevel: ^9could not store the level of ^7"..et.gentity_get(cmdClient, "pers.netname").."^9, the player has no database record.\";")
+        commands.reply(clientId, "^dsetlevel: ^9could not store the level of ^7"..et.gentity_get(cmdClient, "pers.netname").."^9, the player has no database record.")
 
         return true
     end
 
     history.add(cmdClient, clientId, "level", tostring(level))
 
-    et.trap_SendConsoleCommand(et.EXEC_APPEND, "cchat -1 \"^dsetlevel: ^7"..et.gentity_get(cmdClient, "pers.netname").." ^9is now a level ^7"..level.." ^9player.\";")
+    local announcement = "^dsetlevel: ^7"..et.gentity_get(cmdClient, "pers.netname").." ^9is now a level ^7"..level.." ^9player."
+
+    et.trap_SendConsoleCommand(et.EXEC_APPEND, "cchat -1 \""..announcement.."\";")
+
+    -- the players get the announcement above; the server console and rcon get
+    -- no chat at all, and a !setlevel that worked used to answer them with
+    -- nothing whatsoever - which is what "does not do anything" looks like
+    -- from an rcon client
+    if clientId == -1337 then
+        commands.reply(clientId, announcement)
+    end
 
     return true
 end
