@@ -24,6 +24,19 @@ local auth = {}
 
 local srv
 
+-- Some console-side admin commands bypass per-player permission checks and
+-- call these accessors directly. Keep the auth interface callable when its
+-- backend is unavailable instead of raising on a nil method.
+local function useUnavailableBackend()
+    srv = {
+        isPlayerAllowed = function() return false end,
+        getPlayerLevel = function() return 0 end,
+        getLevelName = function() return "unknown" end,
+    }
+
+    setmetatable(auth, {__index = srv})
+end
+
 auth.PERM_ADMINTEST = "admintest"
 auth.PERM_HELP = "help"
 auth.PERM_TIME = "time"
@@ -157,8 +170,10 @@ function auth.onGameInit()
         end
 
         if not db.isConnected() then
-            -- FIXME simple workaround to deny any commands
-            function auth.isPlayerAllowed() return false end
+            -- Client commands are denied and console commands see safe guest
+            -- values; database-dependent commands must still check the
+            -- connection before using the database API.
+            useUnavailableBackend()
 
             return
         end
@@ -179,12 +194,7 @@ function auth.onGameInit()
             -- mode (settings.determineMode() picks it automatically).
             outputDebug("add-on mode selected (g_standalone 0) but there is no shrubbot flag table for '"..et.trap_Cvar_Get("fs_game").."' - no admin command will be accepted; set standalone = 1 in wolfadmin.toml", 3)
 
-            srv = {
-                isPlayerAllowed = function() return false end,
-                getPlayerLevel = function() return 0 end,
-            }
-
-            setmetatable(auth, {__index = srv})
+            useUnavailableBackend()
 
             return
         end
