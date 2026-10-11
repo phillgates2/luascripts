@@ -315,7 +315,14 @@ function acl.removePlayerPermissions(clientId)
 end
 
 function acl.getPlayerLevel(clientId)
-    local player = db.getPlayer(players.getGUID(clientId))
+    local guid = players.getGUID(clientId)
+
+    -- a slot that is not connected has no GUID: treat it as a guest (level 0)
+    if not guid then
+        return 0
+    end
+
+    local player = db.getPlayer(guid)
 
     -- no row means no level: treat the player as a guest (level 0) instead of
     -- throwing, because this runs inside every permission check

@@ -174,7 +174,8 @@ local CLIENT_FIELDS = {
 	["ps.ammoclip"] = { "ps", "ammoclip", array = true },
 	["ps.powerups"] = { "ps", "powerups", array = true },
 	["ps.persistant"] = { "ps", "persistant", array = true },
-	-- session stats the scoreboard and G_BuildEndgameStats() use
+	-- FIELD_INT, FIELD_FLAG_READONLY
+	["ps.ping"] = { "ps", "ping" },	-- session stats the scoreboard and G_BuildEndgameStats() use
 	["sess.kills"] = { "sess", "kills" },
 	["sess.deaths"] = { "sess", "deaths" },
 	["sess.gibs"] = { "sess", "gibs" },
@@ -182,6 +183,12 @@ local CLIENT_FIELDS = {
 	["sess.self_kills"] = { "sess", "self_kills" },
 	["sess.damage_given"] = { "sess", "damage_given" },
 	["sess.damage_received"] = { "sess", "damage_received" },
+	["sess.team_gibs"] = { "sess", "team_gibs" },
+	["sess.team_damage_given"] = { "sess", "team_damage_given" },
+	["sess.team_damage_received"] = { "sess", "team_damage_received" },
+	-- g_lua.c aliases (_et_gclient_addfieldalias): the same storage, two names
+	["sess.team_damage"] = { "sess", "team_damage_given" },
+	["sess.team_received"] = { "sess", "team_damage_received" },
 	["sess.time_played"] = { "sess", "time_played" },
 	["sess.skillpoints"] = { "sess", "skillpoints", array = true },
 	["sess.startskillpoints"] = { "sess", "startskillpoints", array = true },
@@ -191,31 +198,31 @@ local CLIENT_FIELDS = {
 
 -- gentity fields (gentity_fields in g_lua.c) used by the modules under test
 local GENTITY_FIELDS = {
-	["inuse"] = { "inuse" },
+	["inuse"] = { "inuse", int = true },
 	["classname"] = { "classname" },
 	-- ent->health and ent->takedamage: FIELD_INT, both writable
-	["health"] = { "health" },
-	["takedamage"] = { "takedamage" },
+	["health"] = { "health", int = true },
+	["takedamage"] = { "takedamage", int = true },
 	["origin"] = { "origin", vec3 = true },
-	["s.eType"] = { "s", "eType" },
-	["s.weapon"] = { "s", "weapon" },
+	["s.eType"] = { "s", "eType", int = true },
+	["s.weapon"] = { "s", "weapon", int = true },
 	["s.pos"] = { "s", "pos" },
-	["r.ownerNum"] = { "r", "ownerNum" },
+	["r.ownerNum"] = { "r", "ownerNum", int = true },
 	["r.currentOrigin"] = { "r", "currentOrigin", vec3 = true },
 	["r.mins"] = { "r", "mins", vec3 = true },
 	["r.maxs"] = { "r", "maxs", vec3 = true },
-	["r.contents"] = { "r", "contents" },
-	["r.linked"] = { "r", "linked" },
-	["s.number"] = { "s", "number" },
-	["s.modelindex"] = { "s", "modelindex" },
+	["r.contents"] = { "r", "contents", int = true },
+	["r.linked"] = { "r", "linked", int = true },
+	["s.number"] = { "s", "number", int = true },
+	["s.modelindex"] = { "s", "modelindex", int = true },
 	["s.angles"] = { "s", "angles", vec3 = true },
 	["s.apos"] = { "s", "apos" },
 	-- the burning window. The engine reads both back against level.time in its
 	-- flamethrower burn loop (g_active.c:196-206), which is why !burn and
 	-- !firegod have to stamp them from the level clock (GAMEPLAY-FIX.md 9.1).
-	["s.onFireStart"] = { "s", "onFireStart" },
-	["s.onFireEnd"] = { "s", "onFireEnd" },
-	["clipmask"] = { "clipmask" },
+	["s.onFireStart"] = { "s", "onFireStart", int = true },
+	["s.onFireEnd"] = { "s", "onFireEnd", int = true },
+	["clipmask"] = { "clipmask", int = true },
 }
 
 
@@ -233,6 +240,7 @@ local READONLY = {
 	["ps.pm_flags"] = true,
 	["ps.pm_type"] = true,
 	["ps.eFlags"] = true,
+	["ps.ping"] = true,
 	["noclip"] = true,
 	["ps.weapon"] = true,
 	["ps.weaponstate"] = true,
@@ -372,6 +380,7 @@ function stub.new(opts)
 				latchPlayerType = 0, latchPlayerWeapon = 0, latchPlayerWeapon2 = 0,
 				kills = 0, deaths = 0, gibs = 0, team_kills = 0, self_kills = 0,
 				damage_given = 0, damage_received = 0, time_played = 0,
+				team_gibs = 0, team_damage_given = 0, team_damage_received = 0,
 				skillpoints = {}, startskillpoints = {}, aWeaponStats = {},
 			},
 			sess_stats = nil,
@@ -379,7 +388,7 @@ function stub.new(opts)
 				weapon = 0, weaponstate = 0, stats = { [0] = 0 },
 				origin = { 0, 0, 0 }, viewangles = { 0, 0, 0 },
 				velocity = { 0, 0, 0 },
-				pm_flags = 0, pm_type = 0, eFlags = 0,
+				pm_flags = 0, pm_type = 0, eFlags = 0, ping = 0,
 				viewheight = DEFAULT_VIEWHEIGHT,
 				weapons = {}, ammo = {}, ammoclip = {}, powerups = {}, persistant = {},
 			},
@@ -422,16 +431,24 @@ function stub.new(opts)
 		return nil, name
 	end
 
+	-- FIELD_INT_ARRAY fields (ps.stats, ps.persistant, ps.weapons, ps.ammo,
+	-- ps.powerups, sess.skillpoints, ...) are zero-filled C int arrays in the
+	-- engine, so a slot that was never written reads 0 - never nil - and Lua
+	-- scripts may sum them without a guard (etlegacy/etlegacy#2087).
 	local function get_path(root, path, index)
 		local v = root
+		local zero = path.array and 0 or (path.int and 0 or nil)
 		for _, key in ipairs(path) do
-			if type(v) ~= "table" then return nil end
+			if type(v) ~= "table" then return zero end
 			v = v[key]
 		end
 		if path.array then
-			if type(v) ~= "table" then return nil end
-			return v[index or 0]
+			if type(v) ~= "table" then return 0 end
+			local value = v[index or 0]
+			if value == nil then return 0 end
+			return value
 		end
+		if path.int and v == nil then return 0 end
 		return v
 	end
 
@@ -577,6 +594,22 @@ function stub.new(opts)
 				error("bad argument #1 to 'RegisterModname' (string expected, got " .. type(name) .. ")", 0)
 			end
 			engine.modname = name
+			return 0
+		end,
+		-- _et_ClientUserinfoChanged (g_lua.c): runs ClientUserinfoChanged() for
+		-- the slot - the client fields are refreshed from the userinfo and the
+		-- et_ClientUserinfoChanged engine hook fires right after (g_client.c).
+		ClientUserinfoChanged = function(clientnum)
+			local num = tonumber(clientnum) or -1
+			local e = engine.ents[num]
+			if not (e and e.client) then
+				return 0
+			end
+			local info = engine.userinfo and engine.userinfo[num]
+			local name = info and (info["\\name"] or info["name"])
+			if name then e.client.pers.netname = name end
+			local hook = rawget(_G, "et_ClientUserinfoChanged")
+			if type(hook) == "function" then hook(num) end
 			return 0
 		end,
 		trap_Cvar_Get = function(name) return engine.cvars[name] or "" end,

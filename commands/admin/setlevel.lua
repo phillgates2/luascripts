@@ -24,6 +24,8 @@ local db = wolfa_requireModule("db.db")
 
 local commands = wolfa_requireModule("commands.commands")
 
+local players = wolfa_requireModule("players.players")
+
 local settings = wolfa_requireModule("util.settings")
 
 function commandSetLevel(clientId, command, victim, level)
@@ -39,7 +41,7 @@ function commandSetLevel(clientId, command, victim, level)
 
     if cmdClient == -1 or cmdClient == nil then
         return false
-    elseif not et.gentity_get(cmdClient, "pers.netname") then
+    elseif not players.isConnected(cmdClient) then
         return false
     end
 
@@ -74,7 +76,7 @@ function commandSetLevel(clientId, command, victim, level)
         et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dsetlevel: ^9no or multiple matches for '^7"..victim.."^9'.\";")
 
         return true
-    elseif not et.gentity_get(cmdClient, "pers.netname") then
+    elseif not players.isConnected(cmdClient) then
         et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dsetlevel: ^9no connected player by that name or slot #\";")
 
         return true

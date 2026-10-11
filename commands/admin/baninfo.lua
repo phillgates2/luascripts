@@ -39,7 +39,15 @@ function commandBanInfo(clientId, command, banId)
         return true
     end
 
-    local ban = bans.get(tonumber(banId))
+    local id = tonumber(banId)
+
+    if id == nil then
+        et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dbaninfo: ^9no ban with number '^7"..banId.."^9'.\";")
+
+        return true
+    end
+
+    local ban = bans.get(id)
 
     if ban == nil then
         et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dbaninfo: ^9no ban with number '^7"..banId.."^9'.\";")

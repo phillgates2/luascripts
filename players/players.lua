@@ -39,31 +39,43 @@ function players.getName(clientId)
     return et.gentity_get(clientId, "pers.netname")
 end
 
+-- the accessors below must survive a slot that is not (or no longer)
+-- connected: the engine hands every command the slot number the admin typed,
+-- and data[clientId] only exists between onClientConnect and
+-- onClientDisconnect. Returning nil (instead of indexing nil) lets acl/commands
+-- treat the target as a guest/unknown player - see the players.isConnected()
+-- guards in commands/admin/*.lua.
 function players.getGUID(clientId)
-    return data[clientId]["guid"]
+    return data[clientId] and data[clientId]["guid"]
 end
 
 function players.getIP(clientId)
-    return data[clientId]["ip"]
+    return data[clientId] and data[clientId]["ip"]
 end
 
 function players.getProtocol(clientId)
-    return data[clientId]["protocol"]
+    return data[clientId] and data[clientId]["protocol"]
 end
 
 function players.isBot(clientId)
-    return data[clientId]["bot"]
+    return data[clientId] and data[clientId]["bot"]
 end
 
 function players.setLastPMSender(clientId, senderId)
-    data[clientId]["lastpmsender"] = senderId
+    if data[clientId] then
+        data[clientId]["lastpmsender"] = senderId
+    end
 end
 
 function players.getLastPMSender(clientId)
-    return data[clientId]["lastpmsender"]
+    return data[clientId] and data[clientId]["lastpmsender"]
 end
 
 function players.setMuted(clientId, state, type, issued, expires)
+    if not data[clientId] then
+        return
+    end
+
     data[clientId]["mute"] = nil
 
     if state == true then
@@ -88,23 +100,25 @@ function players.isMuted(clientId, type)
 end
 
 function players.getMuteType(clientId)
-    return data[clientId]["mute"]["type"]
+    return data[clientId] and data[clientId]["mute"] and data[clientId]["mute"]["type"]
 end
 
 function players.getMuteIssuedAt(clientId)
-    return data[clientId]["mute"]["issued"]
+    return data[clientId] and data[clientId]["mute"] and data[clientId]["mute"]["issued"]
 end
 
 function players.getMuteExpiresAt(clientId)
-    return data[clientId]["mute"]["expires"]
+    return data[clientId] and data[clientId]["mute"] and data[clientId]["mute"]["expires"]
 end
 
 function players.setTeamLocked(clientId, state)
-    data[clientId]["teamlock"] = state
+    if data[clientId] then
+        data[clientId]["teamlock"] = state
+    end
 end
 
 function players.isTeamLocked(clientId)
-    return data[clientId]["teamlock"]
+    return data[clientId] and data[clientId]["teamlock"]
 end
 
 function players.onClientConnect(clientId, firstTime, isBot)
@@ -152,6 +166,10 @@ end
 events.handle("onClientConnect", players.onClientConnect)
 
 function players.onClientBegin(clientId)
+    if not data[clientId] then
+        return
+    end
+
     events.trigger("onPlayerReady", clientId, data[clientId]["new"])
 
     data[clientId]["new"] = false
@@ -167,6 +185,10 @@ end
 events.handle("onClientDisconnect", players.onClientDisconnect)
 
 function players.onClientInfoChange(clientId)
+    if not data[clientId] then
+        return
+    end
+
     local oldTeam = data[clientId]["team"]
     local newTeam = tonumber(et.gentity_get(clientId, "sess.sessionTeam"))
 

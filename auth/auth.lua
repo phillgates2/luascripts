@@ -167,8 +167,29 @@ function auth.onGameInit()
 
         srv.readPermissions()
     else
-        srv = wolfa_requireModule("auth.shrubbot")
+        local flagsOk = pcall(wolfa_requireModule, "auth.shrubbot."..et.trap_Cvar_Get("fs_game"))
 
+        if not flagsOk then
+            -- g_standalone 0 was forced (a stale [main] standalone = 0 in
+            -- wolfadmin.toml or a `set g_standalone 0`), but this engine/mod
+            -- has no shrubbot flag table: failing here would abort
+            -- et_InitGame() on every map load and leave the module tree half
+            -- loaded. Deny every command like the missing-database case
+            -- above, and say why - ET:Legacy and ETPro belong in standalone
+            -- mode (settings.determineMode() picks it automatically).
+            outputDebug("add-on mode selected (g_standalone 0) but there is no shrubbot flag table for '"..et.trap_Cvar_Get("fs_game").."' - no admin command will be accepted; set standalone = 1 in wolfadmin.toml", 3)
+
+            srv = {
+                isPlayerAllowed = function() return false end,
+                getPlayerLevel = function() return 0 end,
+            }
+
+            setmetatable(auth, {__index = srv})
+
+            return
+        end
+
+        srv = wolfa_requireModule("auth.shrubbot")
         srv.loadFlags(et.trap_Cvar_Get("fs_game"))
     end
     
