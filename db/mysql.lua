@@ -54,18 +54,27 @@ function mysql.updatePlayerLevel(id, level)
 end
 
 function mysql.getPlayerId(clientId)
-    local player = mysql.getPlayer(players.getGUID(clientId))
+    local guid = players.getGUID(clientId)
+
+    -- a slot that is not connected has no GUID, and so no player record
+    if not guid or guid == "" then
+        return nil
+    end
+
+    local player = mysql.getPlayer(guid)
 
     -- a row is created when a player connects, but that insert can fail or a
     -- client can have no cl_guid. create it here instead of handing back nil,
     -- which would break every caller that stores something for this player.
+    -- the console (clientId -1337) has a GUID but no IP: escape() refuses a
+    -- nil, so the insert gets a placeholder address instead of throwing.
     if not player then
-        mysql.addPlayer(players.getGUID(clientId), players.getIP(clientId), os.time(), 1)
+        mysql.addPlayer(guid, players.getIP(clientId) or "0.0.0.0", os.time(), 1)
 
-        player = mysql.getPlayer(players.getGUID(clientId))
+        player = mysql.getPlayer(guid)
     end
 
-    return player and player["id"] or nil
+    return player and tonumber(player["id"]) or nil
 end
 
 function mysql.getPlayersCount()
@@ -97,6 +106,11 @@ function mysql.getPlayers(limit, offset)
 end
 
 function mysql.getPlayer(guid)
+    -- escape() raises on a nil (a slot without a GUID): no GUID, no player
+    if guid == nil then
+        return nil
+    end
+
     cur = assert(con:execute("SELECT * FROM `player` WHERE `guid`='"..con:escape(guid).."'"))
     
     local player = cur:fetch({}, "a")
@@ -155,6 +169,12 @@ function mysql.getLevels()
 end
 
 function mysql.getLevel(id)
+    -- a level id that is not a number (a typed `!setlevel Alice admin`) is no
+    -- level, not a SQL error
+    if tonumber(id) == nil then
+        return nil
+    end
+
     cur = assert(con:execute("SELECT * FROM `level` WHERE `id`='"..tonumber(id).."'"))
     
     local level = cur:fetch({}, "a")
@@ -562,6 +582,12 @@ function mysql.isConnected()
 end
 
 function mysql.start()
+    -- close() drops the environment; a start() after it (a map change on an
+    -- engine that keeps the VM, lua_restart) needs a new one
+    if not env then
+        env = assert(luasql.mysql())
+    end
+
     con = env:connect(settings.get("db_database"), settings.get("db_username"), settings.get("db_password"), settings.get("db_hostname"), settings.get("db_port"))
 
     if not con then
@@ -580,6 +606,10 @@ function mysql.start()
 end
 
 function mysql.close(doSave)
+    if not con then
+        return false
+    end
+
     if con:close() then
         con = nil
 

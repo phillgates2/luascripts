@@ -58,7 +58,7 @@ function commandFinger(clientId, command, victim)
 
     et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dInformation about ^7"..name.."^d:\";")
     et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dName:    ^2"..cleanname.." ("..codedname..")\";")
-    et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dSlot:    ^2"..slot..(slot < tonumber(et.trap_Cvar_Get("sv_privateClients")) and " ^9(private)" or "").."\";")
+    et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dSlot:    ^2"..slot..(slot < (tonumber(et.trap_Cvar_Get("sv_privateClients")) or 0) and " ^9(private)" or "").."\";")
     et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dLevel:   ^2"..level.." ("..levelName..")\";")
     et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dGUID:    ^2"..guid.."\";")
     et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dIP:      ^2"..ip.."\";")
