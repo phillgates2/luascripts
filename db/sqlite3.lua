@@ -465,7 +465,13 @@ function sqlite3.getBans(limit, offset)
 end
 
 function sqlite3.getBan(banId)
-    cur = assert(con:execute("SELECT * FROM `ban` WHERE `id`="..tonumber(banId)..""))
+    banId = tonumber(banId)
+
+    if banId == nil then
+        return nil
+    end
+
+    cur = assert(con:execute("SELECT * FROM `ban` WHERE `id`="..banId..""))
 
     local ban = cur:fetch({}, "a")
     cur:close()

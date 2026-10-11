@@ -18,10 +18,12 @@
 local auth = wolfa_requireModule("auth.auth")
 
 local util = wolfa_requireModule("util.util")
+
 local events = wolfa_requireModule("util.events")
 local files = wolfa_requireModule("util.files")
 local logs = wolfa_requireModule("util.logs")
 local tables = wolfa_requireModule("util.tables")
+local constants = wolfa_requireModule("util.constants")
 
 local commands = {}
 
@@ -321,7 +323,7 @@ function commands.onClientCommand(clientId, command)
         shrubCmd = string.lower(shrubCmd)
         
         if admincmds[shrubCmd] and admincmds[shrubCmd]["function"] and admincmds[shrubCmd]["flag"] then
-            if wolfCmd == "say" or (((wolfCmd == "say_team" and et.gentity_get(clientId, "sess.sessionTeam") ~= et.TEAM_SPECTATORS) or wolfCmd == "say_buddy") and auth.isPlayerAllowed(clientId, auth.PERM_TEAMCMDS)) or (wolfCmd == "!"..shrubCmd and auth.isPlayerAllowed(clientId, auth.PERM_SILENTCMDS)) then
+            if wolfCmd == "say" or (((wolfCmd == "say_team" and et.gentity_get(clientId, "sess.sessionTeam") ~= constants.TEAM_SPECTATORS) or wolfCmd == "say_buddy") and auth.isPlayerAllowed(clientId, auth.PERM_TEAMCMDS)) or (wolfCmd == "!"..shrubCmd and auth.isPlayerAllowed(clientId, auth.PERM_SILENTCMDS)) then
                 if admincmds[shrubCmd]["flag"] ~= "" and auth.isPlayerAllowed(clientId, admincmds[shrubCmd]["flag"]) then
                     local isFinished = admincmds[shrubCmd]["function"](clientId, shrubCmd, tables.unpack(args))
                     

@@ -131,27 +131,47 @@ function balancer.findPlayer(team, teamGreater, teamSmaller)
     return players[rand]
 end
 
+-- lastJoined only tracks the three team lists; sess.sessionTeam can be
+-- TEAM_FREE (0) - a bot connects that way, and the engine sets it again at the
+-- end of ClientDisconnect() - so a move to/from an untracked team is skipped
+-- instead of indexing a nil list.
 function balancer.onclientteamchange(clientId, old, new)
-    local idx = tables.find(lastJoined[old], clientId)
+    local oldList = lastJoined[old]
 
-    if idx then
-        table.remove(lastJoined[old], idx)
+    if oldList then
+        local idx = tables.find(oldList, clientId)
+
+        if idx then
+            table.remove(oldList, idx)
+        end
     end
 
-    if #lastJoined[new] == 10 then
-        table.remove(lastJoined[new], 1)
+    local newList = lastJoined[new]
+
+    if not newList then
+        return
     end
 
-    lastJoined[new][#lastJoined[new] + 1] = clientId
+    if #newList == 10 then
+        table.remove(newList, 1)
+    end
+
+    newList[#newList + 1] = clientId
 end
 events.handle("onClientTeamChange", balancer.onclientteamchange)
 
 function balancer.onclientdisconnect(clientId)
     local team = tonumber(et.gentity_get(clientId, "sess.sessionTeam"))
-    local idx = tables.find(lastJoined[team], clientId)
+    local list = lastJoined[team]
+
+    if not list then
+        return
+    end
+
+    local idx = tables.find(list, clientId)
 
     if idx then
-        table.remove(lastJoined[team], idx)
+        table.remove(list, idx)
     end
 end
 events.handle("onClientDisconnect", balancer.onclientdisconnect)

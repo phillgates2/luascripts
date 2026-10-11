@@ -23,6 +23,8 @@ local db = wolfa_requireModule("db.db")
 
 local commands = wolfa_requireModule("commands.commands")
 
+local players = wolfa_requireModule("players.players")
+
 local util = wolfa_requireModule("util.util")
 local pagination = wolfa_requireModule("util.pagination")
 local settings = wolfa_requireModule("util.settings")
@@ -48,7 +50,7 @@ function commandListHistory(clientId, command, victim, offset)
         et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dshowhistory: ^9no or multiple matches for '^7"..victim.."^9'.\";")
 
         return true
-    elseif not et.gentity_get(cmdClient, "pers.netname") then
+    elseif not players.isConnected(cmdClient) then
         et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dshowhistory: ^9no connected player by that name or slot #\";")
 
         return true

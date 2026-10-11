@@ -43,7 +43,7 @@ function commandAmmoPack(clientId, command, victim)
         et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dammopack: ^9no or multiple matches for '^7"..victim.."^9'.\";")
 
         return true
-    elseif not et.gentity_get(cmdClient, "pers.netname") then
+    elseif not players.isConnected(cmdClient) then
         et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dammopack: ^9no connected player by that name or slot #\";")
 
         return true

@@ -19,8 +19,10 @@ local auth = wolfa_requireModule("auth.auth")
 
 local commands = wolfa_requireModule("commands.commands")
 
-local util = wolfa_requireModule("util.util")
+local players = wolfa_requireModule("players.players")
 
+local constants = wolfa_requireModule("util.constants")
+local util = wolfa_requireModule("util.util")
 local settings = wolfa_requireModule("util.settings")
 
 function commandShowStats(clientId, command, victim)
@@ -40,7 +42,7 @@ function commandShowStats(clientId, command, victim)
         et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dstats: ^9no or multiple matches for '^7"..victim.."^9'.\";")
 
         return true
-    elseif not et.gentity_get(cmdClient, "pers.netname") then
+    elseif not players.isConnected(cmdClient) then
         et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dstats: ^9no connected player by that name or slot #\";")
 
         return true
@@ -97,7 +99,7 @@ function commandShowStats(clientId, command, victim)
     et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dSlot:     ^2"..stats["slot"]..(stats["slot"] < tonumber(et.trap_Cvar_Get("sv_privateClients")) and " ^9(private)" or "").."\";")
     et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dTeam:     ^2"..util.getTeamName(stats["team"]).."\";")
 
-    if stats["team"] ~= et.TEAM_SPECTATORS then
+    if stats["team"] ~= constants.TEAM_SPECTATORS then
         et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dClass:    ^2"..util.getClassName(stats["class"]).."\";")
         et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dHealth:   ^2"..(stats["health"] < 0 and "dead" or stats["health"]).."\";")
     end

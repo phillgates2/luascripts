@@ -21,6 +21,8 @@ local auth = wolfa_requireModule("auth.auth")
 
 local commands = wolfa_requireModule("commands.commands")
 
+local players = wolfa_requireModule("players.players")
+
 local util = wolfa_requireModule("util.util")
 local constants = wolfa_requireModule("util.constants")
 local settings = wolfa_requireModule("util.settings")
@@ -42,7 +44,7 @@ function commandPlayerPut(clientId, command, victim, team)
         et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dput: ^9no or multiple matches for '^7"..victim.."^9'.\";")
         
         return true
-    elseif not et.gentity_get(cmdClient, "pers.netname") then
+    elseif not players.isConnected(cmdClient) then
         et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dput: ^9no connected player by that name or slot #\";")
         
         return true

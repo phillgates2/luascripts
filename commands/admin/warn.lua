@@ -42,7 +42,7 @@ function commandWarn(clientId, command, victim, ...)
 
     if cmdClient == -1 or cmdClient == nil then
         return false
-    elseif not et.gentity_get(cmdClient, "pers.netname") then
+    elseif not players.isConnected(cmdClient) then
         return false
     end
 
@@ -73,7 +73,7 @@ function commandWarn(clientId, command, victim, ...)
         et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dwarn: ^9no or multiple matches for '^7"..victim.."^9'.\";")
 
         return true
-    elseif not et.gentity_get(cmdClient, "pers.netname") then
+    elseif not players.isConnected(cmdClient) then
         et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dwarn: ^9no connected player by that name or slot #\";")
 
         return true

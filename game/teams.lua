@@ -38,7 +38,9 @@ function teams.get()
 end
 
 function teams.count(team)
-    return #players[team]
+    local list = players[team]
+
+    return list and #list or 0
 end
 
 function teams.difference()
@@ -57,33 +59,54 @@ function teams.isLocked(teamId)
     return locks[teamId]
 end
 
+-- sess.sessionTeam is not always one of the three lists this module tracks. A
+-- bot connects with TEAM_FREE (0) - g_client.c only forces the spectator team
+-- for a first-time human - and the engine sets TEAM_FREE again at the very end
+-- of ClientDisconnect(), after the hook. Indexing players[0] would raise
+-- "bad argument #1 to 'for iterator'" inside tables.contains()/find(), so a
+-- team we do not track is simply skipped.
 function teams.onconnect(clientId, firstTime, isBot)
     local team = tonumber(et.gentity_get(clientId, "sess.sessionTeam"))
+    local list = players[team]
 
-    if not tables.contains(players[team], clientId) then
-        table.insert(players[team], clientId)
+    if list and not tables.contains(list, clientId) then
+        table.insert(list, clientId)
     end
 end
 events.handle("onClientConnect", teams.onconnect)
 
 function teams.ondisconnect(clientId)
     local team = tonumber(et.gentity_get(clientId, "sess.sessionTeam"))
-    local idx = tables.find(players[team], clientId)
+    local list = players[team]
+
+    if not list then
+        return
+    end
+
+    local idx = tables.find(list, clientId)
 
     if idx then
-        table.remove(players[team], idx)
+        table.remove(list, idx)
     end
 end
 events.handle("onClientDisconnect", teams.ondisconnect)
 
 function teams.onclientteamchange(clientId, old, new)
-    local idx = tables.find(players[old], clientId)
+    local oldList = players[old]
 
-    if idx then
-        table.remove(players[old], idx)
+    if oldList then
+        local idx = tables.find(oldList, clientId)
+
+        if idx then
+            table.remove(oldList, idx)
+        end
     end
 
-    table.insert(players[new], clientId)
+    local newList = players[new]
+
+    if newList and not tables.contains(newList, clientId) then
+        table.insert(newList, clientId)
+    end
 end
 events.handle("onClientTeamChange", teams.onclientteamchange)
 
