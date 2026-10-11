@@ -37,10 +37,21 @@ function admin.kickPlayer(victimId, invokerId, reason)
     et.trap_DropClient(victimId, "You have been kicked, Reason: "..reason, 0)
 end
 
+-- true when the level was stored; false when the player has no database row
+-- and none could be created (no GUID), which used to reach the SQL layer as
+-- `WHERE id='nil'` and throw
 function admin.setPlayerLevel(clientId, level)
     local playerId = db.getPlayerId(clientId)
 
+    if not playerId then
+        outputDebug("setPlayerLevel: no database record for client "..tostring(clientId)..", level "..tostring(level).." not stored", 3)
+
+        return false
+    end
+
     db.updatePlayerLevel(playerId, level)
+
+    return true
 end
 
 function admin.onClientConnectAttempt(clientId, firstTime, isBot)

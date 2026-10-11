@@ -42,6 +42,9 @@ for key, permission in pairs(auth) do
     end
 end
 
+-- local functions throughout: commands/server/acl.lua (the console's `acl`)
+-- has helpers of the same names, and both files share one global table
+
 local function reply(clientId, message)
     et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dacl: ^9"..message.."\";")
 end
@@ -87,7 +90,7 @@ local function getLevelId(clientId, level)
     return levelId
 end
 
-function commandAclListLevels(clientId)
+local function commandAclListLevels(clientId)
     local levels = {}
 
     for _, level in ipairs(acl.getLevels()) do
@@ -97,7 +100,7 @@ function commandAclListLevels(clientId)
     printList(clientId, levels)
 end
 
-function commandAclListLevelPermissions(clientId, levelId)
+local function commandAclListLevelPermissions(clientId, levelId)
     local permissions = acl.getLevelPermissions(levelId)
 
     if not permissions then
@@ -109,11 +112,11 @@ function commandAclListLevelPermissions(clientId, levelId)
     end
 end
 
-function commandAclIsAllowed(clientId, levelId, permission)
+local function commandAclIsAllowed(clientId, levelId, permission)
     reply(clientId, "level ^7"..levelId.." ^9"..(acl.isLevelAllowed(levelId, permission) and "HAS" or "HAS NOT").." ^7"..permission)
 end
 
-function commandAclAddLevelPermission(clientId, levelId, permission)
+local function commandAclAddLevelPermission(clientId, levelId, permission)
     if acl.isLevelAllowed(levelId, permission) then
         reply(clientId, "level ^7"..levelId.." ^9already has ^7"..permission.."^9.")
 
@@ -129,7 +132,7 @@ function commandAclAddLevelPermission(clientId, levelId, permission)
     reply(clientId, "added ^7"..permission.." ^9to level ^7"..levelId.."^9.")
 end
 
-function commandAclRemoveLevelPermission(clientId, levelId, permission)
+local function commandAclRemoveLevelPermission(clientId, levelId, permission)
     if not acl.isLevelAllowed(levelId, permission) then
         reply(clientId, "level ^7"..levelId.." ^9does not have ^7"..permission.."^9.")
 
@@ -141,7 +144,7 @@ function commandAclRemoveLevelPermission(clientId, levelId, permission)
     reply(clientId, "removed ^7"..permission.." ^9from level ^7"..levelId.."^9.")
 end
 
-function commandAclCopyLevelPermissions(clientId, levelId, newLevelId)
+local function commandAclCopyLevelPermissions(clientId, levelId, newLevelId)
     acl.copyLevelPermissions(levelId, newLevelId)
 
     reply(clientId, "copied the permissions of level ^7"..levelId.." ^9to level ^7"..newLevelId.."^9.")
@@ -149,7 +152,7 @@ end
 
 -- permissions no level has: every command needing one of them is denied for
 -- every player on the server, whatever their level is
-function commandAclMissingPermissions(clientId)
+local function commandAclMissingPermissions(clientId)
     local commandsByPermission = commands.collectPermissions()
     local permissions = {}
 
@@ -172,7 +175,7 @@ function commandAclMissingPermissions(clientId)
     reply(clientId, "grant one with ^2!acl addpermission [level] [permission]^9, the server console logs which command needs which permission.")
 end
 
-function commandAcl(clientId, command, action, arg1, arg2)
+local function commandAcl(clientId, command, action, arg1, arg2)
     if not action then
         reply(clientId, "usage: ^2!"..command.." ^9[^3listlevels^9|^3listpermissions^9|^3isallowed^9|^3addpermission^9|^3removepermission^9|^3copypermissions^9|^3missing^9]")
 

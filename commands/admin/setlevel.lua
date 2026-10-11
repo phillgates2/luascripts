@@ -45,11 +45,18 @@ function commandSetLevel(clientId, command, victim, level)
         return false
     end
 
-    level = tonumber(level) or 0
+    level = tonumber(level)
 
-    if auth.getPlayerLevel(cmdClient) > auth.getPlayerLevel(clientId) then
+    if not level then
         return false
-    elseif level > auth.getPlayerLevel(clientId) then
+    end
+
+    local victimLevel = tonumber(auth.getPlayerLevel(cmdClient)) or 0
+    local invokerLevel = tonumber(auth.getPlayerLevel(clientId)) or 0
+
+    if victimLevel > invokerLevel then
+        return false
+    elseif level > invokerLevel then
         return false
     end
 
@@ -62,7 +69,7 @@ commands.addadmin("setlevel", commandSetLevel, auth.PERM_SETLEVEL, "sets the adm
 function commandSetLevel(clientId, command, victim, level)
     local cmdClient
 
-    if victim == nil then
+    if victim == nil or level == nil then
         et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dsetlevel usage: "..commands.getadmin("setlevel")["syntax"].."\";")
 
         return true
@@ -82,9 +89,24 @@ function commandSetLevel(clientId, command, victim, level)
         return true
     end
 
-    level = tonumber(level) or 0
-    
-    if auth.getPlayerLevel(cmdClient) > auth.getPlayerLevel(clientId) then
+    -- a level that is not a whole number is a typo, not a request for level 0
+    -- (which is what `tonumber(level) or 0` made of it: a mistyped
+    -- `!setlevel Alice 5` demoted Alice to guest)
+    local levelId = string.match(tostring(level), "^%d+$") and tonumber(level)
+
+    if not levelId then
+        et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dsetlevel: ^9'^7"..level.."^9' is not a level number, see ^2!acl listlevels^9.\";")
+
+        return true
+    end
+
+    level = math.tointeger and math.tointeger(levelId) or levelId
+
+    -- always numbers: the mysql driver hands levels back as strings
+    local victimLevel = tonumber(auth.getPlayerLevel(cmdClient)) or 0
+    local invokerLevel = tonumber(auth.getPlayerLevel(clientId)) or 0
+
+    if victimLevel > invokerLevel then
         et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dsetlevel: ^9sorry, but your intended victim has a higher admin level than you do.\";")
 
         return true
@@ -92,13 +114,20 @@ function commandSetLevel(clientId, command, victim, level)
         et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dsetlevel: ^9this admin level does not exist.\";")
 
         return true
-    elseif level > auth.getPlayerLevel(clientId) then
+    elseif level > invokerLevel then
         et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dsetlevel: ^9you may not setlevel higher than your current level.\";")
 
         return true
     end
 
-    admin.setPlayerLevel(cmdClient, level, clientId)
+    if not admin.setPlayerLevel(cmdClient, level, clientId) then
+        -- no player row and none could be created (a client without a GUID):
+        -- say so instead of announcing a level that was never stored
+        et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dsetlevel: ^9could not store the level of ^7"..et.gentity_get(cmdClient, "pers.netname").."^9, the player has no database record.\";")
+
+        return true
+    end
+
     history.add(cmdClient, clientId, "level", tostring(level))
 
     et.trap_SendConsoleCommand(et.EXEC_APPEND, "cchat -1 \"^dsetlevel: ^7"..et.gentity_get(cmdClient, "pers.netname").." ^9is now a level ^7"..level.." ^9player.\";")

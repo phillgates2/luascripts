@@ -96,7 +96,7 @@ function commandShowStats(clientId, command, victim)
 
     et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dStatistics for ^7"..stats["name"].."^d:\";")
     et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dName:     ^2"..stats["cleanname"].." ("..stats["codedsname"]..")\";")
-    et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dSlot:     ^2"..stats["slot"]..(stats["slot"] < tonumber(et.trap_Cvar_Get("sv_privateClients")) and " ^9(private)" or "").."\";")
+    et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dSlot:     ^2"..stats["slot"]..(stats["slot"] < (tonumber(et.trap_Cvar_Get("sv_privateClients")) or 0) and " ^9(private)" or "").."\";")
     et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^dTeam:     ^2"..util.getTeamName(stats["team"]).."\";")
 
     if stats["team"] ~= constants.TEAM_SPECTATORS then

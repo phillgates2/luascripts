@@ -28,6 +28,58 @@ local acl = {}
 local cachedLevels = {}
 local cachedClients = {}
 
+-- the console (rcon, server console) runs admin commands as clientId -1337
+local CONSOLE = -1337
+
+-- Level ids come from three places that do not agree on their type: the
+-- command line ("3", a string), LuaSQL's sqlite3 driver (3, or 3.0 on the
+-- older builds that push every column as a double) and LuaSQL's mysql driver
+-- ("3": MySQL hands back every column as a string). cachedLevels is keyed by
+-- level id and the level checks compare them, so a "3" against a 3 either
+-- misses the cache ("permission denied" for every command at that level) or
+-- throws ("attempt to compare string with number" in !setlevel). Everything
+-- in this module goes through here first.
+local function toLevelId(id)
+    local number = tonumber(id)
+
+    if not number then
+        return nil
+    end
+
+    return math.tointeger and math.tointeger(number) or number
+end
+acl.toLevelId = toLevelId
+
+-- the cache entry for a level, created when the level is new to the cache
+-- (a level added through `acl addlevel` on another server, a permission row
+-- whose level is not in the level table...), so no caller indexes a nil
+local function levelCache(levelId)
+    levelId = toLevelId(levelId)
+
+    if levelId == nil then
+        return nil
+    end
+
+    if not cachedLevels[levelId] then
+        cachedLevels[levelId] = {}
+    end
+
+    return cachedLevels[levelId]
+end
+
+-- the highest level id in the database: what the console counts as
+local function highestLevelId()
+    local highest = 0
+
+    for levelId in pairs(cachedLevels) do
+        if levelId > highest then
+            highest = levelId
+        end
+    end
+
+    return highest
+end
+
 -- Permissions this fork's commands are guarded by that a stock WolfAdmin
 -- database (database/new/sqlite.sql) never grants to any level, so every
 -- command below them answers "permission denied" for every player - the
@@ -92,15 +144,21 @@ function acl.readPermissions()
     -- should probably cache current players' permissions as well, then
     -- read in new players' permissions as they join the server
 
+    cachedLevels = {}
+
     local levels = db.getLevelsWithIds()
     for _, level in ipairs(levels) do
-        cachedLevels[level["id"]] = {}
+        levelCache(level["id"])
     end
 
     local permissions = db.getLevelPermissions()
 
     for _, permission in ipairs(permissions) do
-        table.insert(cachedLevels[permission["level_id"]], permission["permission"])
+        local levelPermissions = levelCache(permission["level_id"])
+
+        if levelPermissions and not tables.contains(levelPermissions, permission["permission"]) then
+            table.insert(levelPermissions, permission["permission"])
+        end
     end
 
     acl.applyDefaultPermissions()
@@ -123,7 +181,7 @@ function acl.applyDefaultPermissions()
                 if not acl.isLevelAllowed(levelId, permission) then
                     db.addLevelPermission(levelId, permission)
 
-                    table.insert(cachedLevels[levelId], permission)
+                    table.insert(levelCache(levelId), permission)
 
                     granted = granted + 1
                 end
@@ -151,16 +209,22 @@ function acl.getLevels()
 end
 
 function acl.isLevel(levelId)
-    return (db.getLevel(levelId) ~= nil)
+    levelId = toLevelId(levelId)
+
+    return levelId ~= nil and (db.getLevel(levelId) ~= nil)
 end
 
 function acl.addLevel(levelId, name)
+    levelId = toLevelId(levelId)
+
     db.addLevel(levelId, name)
 
     cachedLevels[levelId] = {}
 end
 
 function acl.removeLevel(levelId)
+    levelId = toLevelId(levelId)
+
     db.removeLevel(levelId)
 
     cachedLevels[levelId] = nil
@@ -179,39 +243,66 @@ function acl.getLevelName(levelId)
 end
 
 function acl.getLevelPermissions(levelId)
-    return cachedLevels[levelId]
+    return cachedLevels[toLevelId(levelId)]
 end
 
 function acl.addLevelPermission(levelId, permission)
+    levelId = toLevelId(levelId)
+
+    if acl.isLevelAllowed(levelId, permission) then
+        return
+    end
+
     db.addLevelPermission(levelId, permission)
 
-    table.insert(cachedLevels[levelId], permission)
+    table.insert(levelCache(levelId), permission)
 end
 
 function acl.removeLevelPermission(levelId, permission)
+    levelId = toLevelId(levelId)
+
     db.removeLevelPermission(levelId, permission)
 
-    for i, levelPermission in ipairs(cachedLevels[levelId]) do
-        if levelPermission == permission then
-            table.remove(cachedLevels[levelId], i)
+    local levelPermissions = cachedLevels[levelId]
+
+    if not levelPermissions then
+        return
+    end
+
+    -- backwards, so removing an entry does not skip the one after it
+    for i = #levelPermissions, 1, -1 do
+        if levelPermissions[i] == permission then
+            table.remove(levelPermissions, i)
         end
     end
 end
 
 function acl.copyLevelPermissions(levelId, newLevelId)
+    levelId, newLevelId = toLevelId(levelId), toLevelId(newLevelId)
+
     db.copyLevelPermissions(levelId, newLevelId)
 
-    cachedLevels[newLevelId] = tables.merge(cachedLevels[newLevelId], cachedLevels[levelId])
+    local target = levelCache(newLevelId)
+
+    for _, permission in ipairs(cachedLevels[levelId] or {}) do
+        if not tables.contains(target, permission) then
+            table.insert(target, permission)
+        end
+    end
 end
 
 function acl.removeLevelPermissions(levelId)
+    levelId = toLevelId(levelId)
+
     db.removeLevelPermissions(levelId)
 
     cachedLevels[levelId] = {}
 end
 
 function acl.isLevelAllowed(levelId, permission)
-    return cachedLevels[levelId] ~= nil and tables.contains(cachedLevels[levelId], permission)
+    local levelPermissions = cachedLevels[toLevelId(levelId)]
+
+    return levelPermissions ~= nil and tables.contains(levelPermissions, permission)
 end
 
 function acl.isPermissionGranted(permission)
@@ -325,8 +416,23 @@ function acl.getPlayerLevel(clientId)
     local player = db.getPlayer(guid)
 
     -- no row means no level: treat the player as a guest (level 0) instead of
-    -- throwing, because this runs inside every permission check
-    return player and player["level_id"] or 0
+    -- throwing, because this runs inside every permission check. always a
+    -- number (MySQL hands back a string), the callers compare it.
+    local level = player and toLevelId(player["level_id"]) or 0
+
+    -- the console is rcon: commands.onServerCommand() runs its commands
+    -- without a permission check, so it also outranks every level - with the
+    -- stock schema it has a level 5 row, but without that row (or after
+    -- `acl addlevel 6`) it would otherwise be unable to !setlevel anyone
+    if clientId == CONSOLE then
+        local highest = highestLevelId()
+
+        if highest > level then
+            level = highest
+        end
+    end
+
+    return level
 end
 
 return acl

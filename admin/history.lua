@@ -39,7 +39,19 @@ function history.add(victimId, invokerId, type, reason)
     local victimPlayerId = db.getPlayerId(victimId)
     local invokerPlayerId = db.getPlayerId(invokerId)
 
-    db.addHistory(victimPlayerId, invokerPlayerId, type, os.time(), reason)
+    -- the history row references both players: without a row for one of them
+    -- (the console on a database without its player record, a client with no
+    -- GUID) the insert would concatenate a nil into the SQL and throw, taking
+    -- the command that was already carried out down with it
+    if not victimPlayerId or not invokerPlayerId then
+        outputDebug("history.add: no database record for "..(victimPlayerId and "invoker "..tostring(invokerId) or "victim "..tostring(victimId))..", '"..tostring(type).."' entry not stored", 3)
+
+        return false
+    end
+
+    db.addHistory(victimPlayerId, invokerPlayerId, type, os.time(), reason or "")
+
+    return true
 end
 
 function history.remove(clientId, historyId)
