@@ -39,7 +39,7 @@ local function status(clientId)
     local state = doublejump.getStatus()
 
     et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^ddoublejump: ^9"..(state.enabled and "on" or "off")..", ^7mode ^3"..state.mode..", ^7window ^3"..state.window.."ms^7, ^7boost ^3x"..state.boost.." ^7of "..state.jumpVelocity.."^9.\";")
-    et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^ddoublejump: ^9"..state.maxAirJumps.." extra jump per time in the air"..(state.announce and ", players are told how to trigger it on spawn" or "")..".\";")
+    et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"^ddoublejump: ^9"..state.maxAirJumps.." extra jump per time in the air.\";")
 end
 
 function commandDoubleJump(clientId, command, action, ...)
