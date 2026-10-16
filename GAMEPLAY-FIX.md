@@ -877,7 +877,6 @@ g_doublejump_mode     command|crouch|auto
 g_doublejump_window   ms         default 850, jaymod's PM_JUMP_DELAY
 g_doublejump_boost    factor     default 1.4
 g_doublejump_sound    ""         optional "sound/player/land.wav" on the jump
-g_doublejump_announce 0/1        tell players the jump is available when they spawn
 ```
 
 `onGameInit` registers only the ones that are empty, so a `server.cfg` value wins
@@ -1270,16 +1269,17 @@ cg_servercmds.c):
    placed standing players at `origin == floor`, an origin-at-feet convention
    the engine does not use.
 
-Fix (the requested UX - jaymod-style jump-tap, with the bind pushed):
+Fix (the requested UX - jaymod-style jump-tap, with the bind pushed at the
+players; the pushing was removed again in section 14):
 
-- The bind is now pushed where it cannot be missed: at the first spawn the
-  player gets the hint twice - a centre print (`cp`) and a message-line copy
-  (`cpm`, which also lands in the console for copying). `g_doublejump_announce
-  0` keeps it quiet. Since server text cannot show quote characters, the hint
-  shows the runnable `bind MOUSE3 djump` verbatim and describes the jump-key
-  bind in words ("bind your jump key to +moveup;djump as one quoted command");
-  the exact line is spelled out in the module header and above:
-  `bind SPACE "+moveup;djump"`.
+- The bind was pushed at every player, twice, on the first spawn - a centre
+  print (`cp`) and a message-line copy (`cpm`, which also lands in the console
+  for copying), off with `g_doublejump_announce 0`. Since server text cannot
+  show quote characters, the hint showed the runnable `bind MOUSE3 djump`
+  verbatim and described the jump-key bind in words (the exact line, kept in
+  the module header: `bind SPACE "+moveup;djump"`). **This is gone again** -
+  the telling was removed on request, see section 14; the quote-safe bind line
+  now belongs in the MOTD or `!rules`.
 - `!doublejump mode command` repeats the requirement in the chat output.
 - `isAirborne()` probes at the soles (`FEET_OFFSET = 24` below `ps.origin`), so
   the ground refusal answers honestly in real play: a `djump` mashed with the
@@ -1298,3 +1298,47 @@ Verification: `/tmp/lua54 tests/<name>.lua`, all green - doublejump 67 (three
 new checks: the hint arrives as `cp` + `cpm` and never as a bare console
 `print`), knife_kill 182, live_sim 26, gameplay 38, audit_fix 70, botvote 184,
 honors 34, slot5_engine 20.
+
+## 14. Follow-up: the telling is gone - nothing is pushed at players
+
+`game/doublejump.lua`, `commands/admin/doublejump.lua`, `tests/doublejump_spec.lua`.
+
+Requested: stop telling players about the double jump in game. Section 13 had
+the module push the bind at every player once a map; a player who had already
+bound `djump` got told again on every map, and one who had not was reading it
+mid-firefight. The hint is removed rather than defaulted off:
+
+- `announce()` and the `onPlayerSpawn` call to it are gone. A spawn now resets
+  the per-client bookkeeping and sends nothing at all - no `cp`, no `cpm`, no
+  console `print`.
+- `g_doublejump_announce` is gone with it: the cvar and its default, and the
+  `announce` field `doublejump.getStatus()` used to report. `!doublejump status`
+  no longer mentions it. A `server.cfg` or `wolfadmin.toml` that still sets it
+  is harmless - nothing reads it any more - but it no longer switches anything.
+- The per-client `told` latch went too, so the state table is back to the five
+  fields the jump itself needs.
+- What is kept is the module answering input rather than arriving unasked: a
+  `djump` press in a mode that does not listen to it is still answered with the
+  centre print that says so (`crouch` fires the jump on a duck, `auto` does it
+  on take-off), and `!doublejump mode command` still names the bind in its
+  broadcast because an admin asked for the change. Since the bind line cannot
+  carry its quotes through any server text (section 13, finding 2), the place
+  for it is now the MOTD or `!rules`, where it is one line:
+
+    bind SPACE "+moveup;djump"
+
+- No engine behaviour changed: the take-off detection, the 850 ms window, the
+  1.4 boost, one air jump per airtime and every refusal in `check()` are the
+  same, and `apply()` still only writes `ps.velocity`.
+
+Tests: `tests/doublejump_spec.lua`, 65 checks. "players are told how to bind it,
+once" is replaced by "nothing is pushed at players about the double jump", which
+asserts a spawn sends nothing (first spawn, respawn and on a fresh server), that
+`getStatus()` has no `announce` field left to report, and that a `djump` press
+in `crouch` mode still explains itself. The word `announce` no longer appears
+anywhere in the module or the command.
+
+Verification: `/tmp/lua54 tests/<name>.lua`, all green - doublejump 65,
+acl_setlevel (skipped: needs the lupa runtime for the sqlite driver),
+audit_fix 70, botvote 292, command_target 48, gameplay 38, honors 34,
+init_guard 61, knife_kill 182, slot5_engine 20, live_sim 26.

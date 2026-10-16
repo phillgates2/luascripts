@@ -465,29 +465,33 @@ test("!doublejump toggles, reports and retunes", function()
 	check(vz(server, 1) == JUMP_VELOCITY * 1.4, "back to jaymod's numbers")
 end)
 
-test("players are told how to bind it, once", function()
+test("nothing is pushed at players about the double jump", function()
 	local server = new_server({ sv_maxclients = 8 })
 	player(server, 1, 1, { 0, 0, 24 })
 
-	server.events.trigger("onPlayerSpawn", 1, false)
-	check(sentTo(server, 1):find("djump", 1, true) ~= nil, "the first spawn explains the bind")
-	check(sentTo(server, 1):find("+moveup;djump", 1, true) ~= nil,
-		"including how to keep it on the jump key")
-	check(sentTo(server, 1):find("cp \"", 1, true) ~= nil, "as a centre print, seen in play")
-	check(sentTo(server, 1):find("cpm \"", 1, true) ~= nil, "and again on the message line")
-	check(sentTo(server, 1):find("print ", 1, true) == nil,
-		"not as a console print, which scrolls past unseen")
-
 	server.engine.commands = {}
-	server.events.trigger("onPlayerSpawn", 1, true)
-	check(sentTo(server, 1) == "", "and it is not repeated on every respawn")
+	server.events.trigger("onPlayerSpawn", 1, false)
+	check(sentTo(server, 1) == "", "a spawn sends the player no hint at all")
 
-	-- a new server that has the announcement switched off stays quiet
-	local quiet = new_server({ sv_maxclients = 8 })
-	et.trap_Cvar_Set("g_doublejump_announce", "0")
-	player(quiet, 2, 1, { 0, 0, 24 })
-	quiet.events.trigger("onPlayerSpawn", 2, false)
-	check(sentTo(quiet, 2) == "", "g_doublejump_announce 0 keeps quiet")
+	server.events.trigger("onPlayerSpawn", 1, true)
+	check(sentTo(server, 1) == "", "and neither does the next one")
+
+	-- the module used to push the bind at every player once a map; the cvar and
+	-- the per-client state that drove it are gone, not merely switched off
+	check(server.doublejump.getStatus().announce == nil,
+		"there is no announce setting left to report")
+
+	local fresh = new_server({ sv_maxclients = 8 })
+	player(fresh, 2, 1, { 0, 0, 24 })
+	fresh.engine.commands = {}
+	fresh.events.trigger("onPlayerSpawn", 2, false)
+	check(sentTo(fresh, 2) == "", "a fresh server is quiet as well")
+
+	-- what a player does get is an answer to their own input, never a hint
+	et.trap_Cvar_Set("g_doublejump_mode", "crouch")
+	djump(fresh, 2)
+	check(sentTo(fresh, 2):find("duck", 1, true) ~= nil,
+		"pressing the key still explains itself when the server ignores it")
 end)
 
 test("a disconnect and a spawn clear the bookkeeping", function()

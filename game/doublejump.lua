@@ -49,7 +49,6 @@
 --   g_doublejump_window  ms after take-off           (default 850)
 --   g_doublejump_boost   multiplier on the jump      (default 1.4)
 --   g_doublejump_sound   sound to play, "" for none  (default "")
---   g_doublejump_announce 0 = do not push the bind on players (default 1)
 --
 --   command - the player binds a key to the client command "djump". Bound next
 --             to jump, as in  bind SPACE "+moveup;djump"  it plays like
@@ -60,12 +59,13 @@
 --             double jump so much as a higher one.
 --
 -- Because an air press is invisible, command mode only works once each player
--- has bound "djump" to something. The first spawn pushes that bind twice where
--- it cannot be missed - a centre print and a message-line copy, both off with
--- g_doublejump_announce 0. Server text cannot show quote characters (the
--- client tokenizer's own note: "this doesn't handle \" escaping"), so the hint
--- prints the runnable  bind MOUSE3 djump  and describes the jump-key bind in
--- words. The exact line to type there is:
+-- has bound "djump" to something. Players are not told that in game: the module
+-- sends nothing they did not ask for, no spawn hint and no centre print. Getting
+-- the bind out to them is the server owner's job, out of band, in the MOTD or
+-- the rules - which is also the only place the jump-key line can be written out
+-- in full, since server text cannot carry quote characters (the client
+-- tokenizer's own note: "this doesn't handle \" escaping"). For the record, and
+-- for the MOTD, the exact line to type is:
 -- bind SPACE "+moveup;djump"
 --
 -- Two things a server owner should know. The velocity is written server side,
@@ -132,12 +132,11 @@ local CVARS = {
     g_doublejump_window = tostring(PM_JUMP_DELAY),
     g_doublejump_boost = "1.4",
     g_doublejump_sound = "",
-    g_doublejump_announce = "1",
 }
 
 local MODES = { command = true, crouch = true, auto = true }
 
--- [clientId] = { takeoff, jumps, held, ducked, seenBelow, told }
+-- [clientId] = { takeoff, jumps, held, ducked, seenBelow }
 local state = {}
 
 local function cvar(name)
@@ -197,7 +196,6 @@ function doublejump.getStatus()
         window = doublejump.getWindow(),
         boost = doublejump.getBoost(),
         sound = cvar("g_doublejump_sound"),
-        announce = cvarNumber("g_doublejump_announce", 1) ~= 0,
         jumpVelocity = JUMP_VELOCITY,
         maxAirJumps = MAX_AIR_JUMPS,
     }
@@ -213,7 +211,7 @@ local function track(clientId)
     if not s then
         s = {
             takeoff = 0, jumps = 0, held = false, ducked = false,
-            seenBelow = true, told = false,
+            seenBelow = true,
         }
         state[clientId] = s
     end
@@ -421,34 +419,6 @@ function doublejump.ongameframe(levelTime)
 end
 events.handle("onGameFrame", doublejump.ongameframe)
 
--- Tell a player once per map how to get the second jump, so the feature is not
--- invisible to everybody who has not read the release notes. A console print
--- scrolls past unseen in a firefight - and the old one truncated at the first
--- quote it tried to show - so the hint goes where it is seen: a centre print,
--- and a copy on the message line that also lands in the console for copying.
-local function announce(clientId)
-    if cvarNumber("g_doublejump_announce", 1) == 0 then
-        return
-    end
-
-    local mode = doublejump.getMode()
-
-    if mode == "command" then
-        local hint = "^ddouble jump^7: jump, then tap jump again in mid air. " ..
-            "One-time setup in the console: ^3bind MOUSE3 djump^7 - " ..
-            "or bind your jump key to ^3+moveup;djump^7 as one quoted command."
-
-        et.trap_SendServerCommand(clientId, "cp \""..hint.."\"")
-        et.trap_SendServerCommand(clientId, "cpm \""..hint.."\"")
-    elseif mode == "crouch" then
-        local hint = "^ddouble jump^7: duck (^3crouch^7) in mid air, within " ..
-            doublejump.getWindow().." ms of leaving the ground."
-
-        et.trap_SendServerCommand(clientId, "cp \""..hint.."\"")
-        et.trap_SendServerCommand(clientId, "cpm \""..hint.."\"")
-    end
-end
-
 function doublejump.onclientcommand(clientId)
     if not doublejump.isEnabled() then
         return 0
@@ -489,6 +459,12 @@ function doublejump.onclientcommand(clientId)
 end
 events.handle("onClientCommand", doublejump.onclientcommand)
 
+-- A spawn resets the bookkeeping and sends the player nothing. It used to push
+-- the djump bind here, once a map: a centre print plus a message-line copy,
+-- both gone. Players who had already bound the key were told again on every
+-- map, and the ones who had not were reading it mid-firefight. How the bind is
+-- advertised is the server owner's call now - the MOTD, !rules, !help - and out
+-- there is where the exact line can be written out with its quotes, too.
 function doublejump.onplayerspawn(clientId)
     local s = track(clientId)
 
@@ -499,12 +475,6 @@ function doublejump.onplayerspawn(clientId)
     s.held = false
     s.ducked = false
     s.seenBelow = true
-
-    if doublejump.isEnabled() and not s.told then
-        s.told = true
-
-        announce(clientId)
-    end
 end
 events.handle("onPlayerSpawn", doublejump.onplayerspawn)
 
