@@ -12,12 +12,12 @@
 -- the engine's own cpm wording), and that the module claims exactly the commands
 -- it owns and leaves every other one - "kill" included - to the engine.
 --
--- The command modules cannot load in a spec (commands.commands needs TOML and a
--- sqlite database, auth.auth needs the ACL tables), so the harness injects
--- stand-ins and, for commands.commands, a dispatcher that behaves like the real
--- one: registered first, as main.lua does, answering 0 for a command it does not
--- own. commands/client/callvote.lua, game/botvote.lua, game/voting.lua,
--- game/bots.lua and the util modules are the real thing.
+-- Both the normal engine callvotes and the Lua bot vote go through the REAL
+-- commands.commands dispatcher, registered first as main.lua does. A fake
+-- dispatcher used to hide its conversion of a numeric 0 (not handled) into 1,
+-- which swallowed every normal callvote and the engine's vote help. Only the
+-- database, auth, settings, file listing and log I/O are replaced here;
+-- commands/client/callvote.lua and the voting, bot and util modules are real.
 --
 -- Run with:   lua tests/botvote_spec.lua [--verbose]
 -- Exit code:  0 when everything passes, 1 otherwise.
@@ -65,26 +65,29 @@ function wolfa_requireModule(name)
 	return result
 end
 
-local admin, referees, botslots, settingValues
+function outputDebug() end
+
+local referees, botslots, settingValues
 
 local function new_server(opts)
 	cache = {}
-	admin = {}
 	referees = {}
 	botslots = {}
-	settingValues = { omnibot_maxbots = 10 }
+	settingValues = {
+		omnibot_maxbots = 10, g_standalone = 0,
+		g_restrictedVotes = "", g_voteNextMapTimeout = 0,
+	}
 
 	local engine = stub.new(opts)
 	engine.install()
 
-	local clientCommands = {}
-	cache["commands.commands"] = {
-		addclient = function(name, fn) clientCommands[name] = fn end,
-		addadmin = function(name, fn, permission, description, syntax)
-			admin[name] = { fn = fn, permission = permission, syntax = syntax or "" }
+	cache["util.files"] = {
+		ls = function(directory)
+			return directory == "commands/client/" and { "callvote.lua" } or {}
 		end,
-		getadmin = function(name) return admin[name] or {} end,
 	}
+	cache["util.logs"] = { writeAdmin = function() end }
+	cache["db.db"] = { isConnected = function() return false end }
 	cache["auth.auth"] = {
 		PERM_BOTADMIN = "botadmin", PERM_NOVOTELIMIT = "novotelimit", PERM_CHEATS = "cheats",
 		isPlayerAllowed = function(clientId, permission)
@@ -94,12 +97,7 @@ local function new_server(opts)
 		isTargetProtected = function() return false end,
 	}
 	cache["util.settings"] = {
-		get = function(name)
-			if name == "g_standalone" then return 0 end
-			if name == "g_restrictedVotes" then return "" end
-			if name == "g_voteNextMapTimeout" then return 0 end
-			return settingValues[name]
-		end,
+		get = function(name) return settingValues[name] end,
 		set = function(name, value) settingValues[name] = value end,
 		load = function() end,
 	}
@@ -115,19 +113,9 @@ local function new_server(opts)
 
 	local events = wolfa_requireModule("util.events")
 
-	-- main.lua loads commands.commands (line 137) before the game modules, so
-	-- its onClientCommand handler is first on the bus and ends in `return 0`
-	events.handle("onClientCommand", function(clientId, cmdText)
-		local handler = clientCommands[et.trap_Argv(0)]
-
-		if handler then
-			return handler(clientId, cmdText) or 0
-		end
-
-		return 0
-	end)
-
-	wolfa_requireModule("commands.client.callvote")
+	-- main.lua loads this before the game modules. Its onGameInit handler
+	-- loads commands/client/callvote.lua through the normal command registry.
+	local commands = wolfa_requireModule("commands.commands")
 
 	local timers = wolfa_requireModule("util.timers")
 	local botvote = wolfa_requireModule("game.botvote")
@@ -139,7 +127,7 @@ local function new_server(opts)
 
 	return {
 		engine = engine, events = events, timers = timers, botvote = botvote,
-		voting = voting, constants = constants, time = 1000,
+		voting = voting, constants = constants, commands = commands, time = 1000,
 	}
 end
 
@@ -167,7 +155,7 @@ end
 -- a client command, exactly as et_ClientCommand() delivers it
 local function command(server, num, text)
 	server.engine.parse_command(text)
-	return server.events.trigger("onClientCommand", num, text)
+	return server.events.trigger("onClientCommand", num, et.trap_Argv(0))
 end
 
 local function callvote(server, num, text)
@@ -557,6 +545,107 @@ test("the vote is cleaned up when its caller leaves or the map changes", functio
 	callvote(server, 1, "bots off")
 	check(server.botvote.isActive(), "the same player may call one again after the restart")
 	et.trap_Cvar_Set("vote_limit", "0")
+end)
+
+test("normal callvotes reach the engine with their arguments intact", function()
+	local server = new_server({ sv_maxclients = 4 })
+	player(server, 0, 1)
+	player(server, 1, 2)
+
+	local seen
+	server.events.handle("onCallvote", function(clientId, voteType, args)
+		seen = { clientId = clientId, type = voteType, args = args }
+		return 0
+	end)
+
+	-- Every native aVoteInfo[] type, not the cvar-only "muting" alias.
+	local normalVotes = {
+		"antilag 1", "balancedteams 1", "campaign cmpgn_northafrica", "cointoss",
+		"config public", "friendlyfire 1", "gametype 2", "kick 1", "map oasis",
+		"maprestart", "matchreset", "mutespecs 1", "mute 1", "nextcampaign",
+		"nextmap", "poll should we rush the depot", "referee 1", "restartcampaign",
+		"shuffleteams", "shuffleteams_norestart", "startmatch", "surrender",
+		"swapteams", "timelimit 20", "unmute 1", "unreferee 1", "warmupdamage 1",
+	}
+
+	for _, text in ipairs(normalVotes) do
+		seen = nil
+		check(callvote(server, 0, text) == 0, text .. " is not swallowed by Lua")
+		local voteType, args = text:match("^(%S+)%s*(.*)$")
+		check(seen and seen.clientId == 0 and seen.type == voteType
+			and table.concat(seen.args, " ") == args, text .. " keeps its type and arguments")
+		check(not server.botvote.isActive(), text .. " does not start a bot vote")
+	end
+
+	-- The engine supplies quoted poll text as ONE argument, not separate words.
+	server.engine.argv = { "callvote", "poll", "should we rush the depot" }
+	check(server.events.trigger("onClientCommand", 0, "callvote") == 0,
+		"a quoted native poll is passed through too")
+	check(#seen.args == 1 and seen.args[1] == "should we rush the depot",
+		"a quoted argument is not split or rewritten")
+	check(vote(server, 1, "yes") == 0 and vote(server, 1, "no") == 0,
+		"answers to native votes are left to the engine")
+	check(broadcast(server) == "" and console(server) == "",
+		"Lua neither announces nor executes native votes")
+end)
+
+test("normal vote help and unknown types are left to the engine", function()
+	local server = new_server({ sv_maxclients = 4 })
+	player(server, 0, 1)
+
+	for _, text in ipairs({ "", "?" }) do
+		silence(server)
+		check(callvote(server, 0, text) == 0, "callvote " .. text .. " reaches the engine's normal vote list")
+		check(countIn(sentTo(server, 0), "callvote bots") == 1,
+			"the bot vote is added to the native help exactly once")
+	end
+
+	check(callvote(server, 0, "map ?") == 0, "native per-vote help is preserved")
+	check(callvote(server, 0, "unknownvote value") == 0, "unknown types get the engine's own help")
+	check(callvote(server, 0, "bots ?") == 1, "bot-specific help remains handled by Lua")
+
+	player(server, 2, 3)
+	check(callvote(server, 2, "map oasis") == 0,
+		"the engine still decides whether a spectator may call a normal vote")
+	et.trap_Cvar_Set("g_botVote", "0")
+	check(callvote(server, 0, "nextmap") == 0,
+		"disabling bot votes does not disable normal votes")
+end)
+
+test("normal votes still honour WolfAdmin restrictions", function()
+	local server = new_server({ sv_maxclients = 4 })
+	player(server, 0, 1)
+	player(server, 1, 2)
+	settingValues.g_restrictedVotes = "map,kick"
+	server.voting.load()
+
+	check(callvote(server, 0, "map oasis") == 1, "a restricted map vote is intercepted")
+	check(sentTo(server, 0):find('cp "You are not allowed to call this type of vote."', 1, true) ~= nil,
+		"the rejection is a complete, quoted centre-print command")
+	check(callvote(server, 0, "kick 1") == 1, "a restricted kick vote is intercepted")
+	check(callvote(server, 0, "MAP oasis") == 1, "vote names cannot bypass restrictions by changing case")
+	check(command(server, 0, "CALLVOTE map oasis") == 1, "command names remain case-insensitive")
+	check(callvote(server, 0, "map ?") == 0, "restricted votes still have native usage help")
+	check(callvote(server, 0, "nextmap") == 0, "unrestricted normal votes are still available")
+
+	referees[1] = true
+	check(callvote(server, 1, "map oasis") == 0, "a player with novotelimit may call a restricted vote")
+	check(not server.botvote.isActive(), "none of these normal votes starts a bot vote")
+end)
+
+test("client commands preserve boolean and numeric interception answers", function()
+	local server = new_server({ sv_maxclients = 4 })
+	local cases = {
+		{ value = 0, expected = 0 }, { value = 1, expected = 1 },
+		{ value = false, expected = 0 }, { value = true, expected = 1 },
+		{ expected = 0 }, -- nil: not handled
+	}
+
+	for _, case in ipairs(cases) do
+		server.commands.addclient("testhook", function() return case.value end, "", "", false)
+		check(command(server, 0, "testhook") == case.expected,
+			"handler result " .. tostring(case.value) .. " reaches the engine as " .. case.expected)
+	end
 end)
 
 test("everything that is not this vote is left to the engine", function()

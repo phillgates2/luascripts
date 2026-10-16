@@ -284,7 +284,10 @@ function commands.onClientCommand(clientId, command)
             local isFinished = clientcmds[wolfCmd]["function"](clientId, wolfCmd, tables.unpack(args))
 
             if isFinished ~= nil then
-                return isFinished and 1 or 0
+                -- Event-backed commands such as callvote return numeric 0/1.
+                -- Lua treats 0 as true; do not swallow native votes or their
+                -- help when the onCallvote handlers say "not handled".
+                return (isFinished ~= false and isFinished ~= 0) and 1 or 0
             end
         end
     end
