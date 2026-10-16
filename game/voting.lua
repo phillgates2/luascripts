@@ -89,11 +89,14 @@ end
 events.handle("onGameStateChange", voting.onGameStateChange)
 
 function voting.onCallvote(clientId, type, args)
+    -- Native vote names are case-insensitive, so restrictions must be too.
+    type = string.lower(type)
+
     if et.gentity_get(clientId, "sess.sessionTeam") == constants.TEAM_SPECTATORS or args[1] == "?" then
         return 0
     elseif voting.isRestricted(type) and not auth.isPlayerAllowed(clientId, auth.PERM_NOVOTELIMIT) then
         et.trap_SendConsoleCommand(et.EXEC_APPEND, "csay "..clientId.." \"callvote: you are not allowed to call this type of vote.\";")
-        et.trap_SendServerCommand(clientId, "cp \"You are not allowed to call this type of vote.")
+        et.trap_SendServerCommand(clientId, "cp \"You are not allowed to call this type of vote.\"")
 
         return 1
     end

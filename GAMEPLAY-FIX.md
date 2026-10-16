@@ -1115,6 +1115,47 @@ Mutation-tested: 16 mutations - the threshold comparison, the `no > 1` rule, the
 `vote_limit` comparison, the alias table, the strictness rejections, the
 `TEAM_AXIS_SC`-to-number mapping - each fail the suite.
 
+### 11.6 Normal callvotes alongside bot votes
+
+The normal ET:Legacy votes remain engine-owned; they do not need a second Lua
+implementation. Examples:
+
+```text
+callvote map oasis
+callvote nextmap
+callvote maprestart
+callvote kick 3
+callvote mute 3
+callvote unmute 3
+callvote shuffleteams
+callvote swapteams
+callvote timelimit 20
+callvote poll should we rush the depot
+vote yes
+vote no
+```
+
+`callvote` or `callvote ?` shows the engine's normal vote list, with the bot-vote
+usage added by Lua. Native vote availability, validation, counting, referee
+behaviour and `vote_allow_*` settings still belong to the engine. WolfAdmin's
+`g_restrictedVotes` check still intercepts restricted votes (case-insensitively),
+except for players with `novotelimit`; `callvote <type> ?` still reaches native
+usage help. While a Lua bot vote is running, a second callvote is still refused
+rather than starting a native vote alongside it.
+
+The missing piece was the client dispatcher: `onCallvote` returns numeric `0`
+for a native vote, but `commands.onClientCommand()` converted that with
+`isFinished and 1 or 0`. Lua considers `0` true, so every normal callvote and its
+help were swallowed before the engine could see them. The dispatcher now
+preserves both boolean and numeric interception answers. The restriction's
+centre-print reply also now has its closing quote.
+
+`tests/botvote_spec.lua` now uses the **real** command dispatcher instead of a
+stand-in, which had hidden this bug. Its 292 checks include all 27 native vote
+types, unchanged arguments (including a quoted poll), native help and unknown
+types, restrictions and their bypass, and the existing bot vote behaviour.
+The full 11-suite regression run passes.
+
 ## 12. Follow-up: "throw knife not working" - the right-click that never reaches the server
 
 Symptom from the server: the throwable knife still cannot be thrown in normal

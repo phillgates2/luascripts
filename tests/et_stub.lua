@@ -1118,7 +1118,7 @@ function stub.wolfadmin_client_command(engine)
 			local args = {}
 			for i = 1, argc() - 1 do args[#args + 1] = argv(i) end
 			local isFinished = c.func(clientId, wolfCmd, table.unpack(args))
-			if isFinished ~= nil then return isFinished and 1 or 0 end
+			if isFinished ~= nil then return (isFinished ~= false and isFinished ~= 0) and 1 or 0 end
 		end
 
 		-- chat commands: say "/cmd ..." (commands.lua:259) and say "!cmd ..."
